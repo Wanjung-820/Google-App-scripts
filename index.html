@@ -68,6 +68,7 @@ var DEFAULTS={
  plans:[],        /* {id,ym,name,amount,card} amount 為負代表進帳 */
  dividends:[],    /* {id,name,ym,amount,yearly} 股息:入帳的那個月 */
  holdings:[],     /* {id,name,type,shares,avgCost,price} 個股/ETF 持股明細 */
+ netWorthHistory:[], /* {date,total} 每次校正資產/存持股時留下的真實快照,不是外推 */
  goals:[{id:uid(),name:"存到 100 萬",target:1000000,tasks:[
    {id:uid(),name:"第一桶 50 萬",target:500000},
    {id:uid(),name:"衝到 70 萬",target:700000},
@@ -76,6 +77,8 @@ var DEFAULTS={
 };
 var CARD_COLORS=[C.blue,C.jade,C.clay,C.gold,C.inkSoft];
 var HOLDING_TYPES=["大盤型ETF","高股息ETF","主題型ETF","個股","債券","海外資產","其他"];
+/* 固定依「類型」本身配色,不依出現順序,顏色驗證過對本頁底色(#FBFAF5)可通過 CVD 分辨度 */
+var TYPE_COLORS={"大盤型ETF":"#2a78d6","高股息ETF":"#eb6834","主題型ETF":"#1baf7a","個股":"#eda100","債券":"#e87ba4","海外資產":"#008300","其他":"#4a3aa7"};
 
 function nextMonth(ym){var p=ym.split("-"),y=+p[0],m=+p[1];m++;if(m>12){m=1;y++;}return y+"-"+String(m).padStart(2,"0");}
 function ymLabel(ym){return +ym.split("-")[1]+"月";}
@@ -93,6 +96,50 @@ function stockTotals(){
    return {value:value,cost:cost};
  }
  return {value:db.assets.stockValue||0,cost:db.assets.stockCost||0};
+}
+/* 每次校正資產/存持股時呼叫,留一個真實快照;同一天存多次只更新那天,不會洗版 */
+function snapshotNetWorth(){
+ var a=db.assets, st=stockTotals();
+ var total=a.savingsAccum+st.value+a.travelFund+a.cash;
+ var today=dstr(new Date());
+ var hist=db.netWorthHistory=db.netWorthHistory||[];
+ var last=hist[hist.length-1];
+ if(last&&last.date===today)last.total=total;
+ else hist.push({date:today,total:total});
+ if(hist.length>60)hist.splice(0,hist.length-60);
+}
+function shortDate(d){var p=d.split("-");return (+p[1])+"/"+(+p[2]);}
+function netWorthHistorySVG(hist){
+ var W=400,H=130,padL=8,padR=8,padT=24,padB=20;
+ var plotW=W-padL-padR, plotH=H-padT-padB;
+ var vals=hist.map(function(h){return h.total;});
+ var min=Math.min.apply(null,vals), max=Math.max.apply(null,vals);
+ if(min===max){min-=1;max+=1;}
+ function x(i){return padL+i/(hist.length-1)*plotW;}
+ function y(v){return padT+plotH-(v-min)/(max-min)*plotH;}
+ var d=hist.map(function(h,i){return (i===0?"M":"L")+" "+x(i).toFixed(1)+" "+y(h.total).toFixed(1);}).join(" ");
+ var last=hist[hist.length-1], first=hist[0];
+ var lx=x(hist.length-1), ly=y(last.total);
+ var labelY=Math.max(12,ly-10);
+ return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block">'+
+  '<path d="'+d+'" fill="none" stroke="'+C.faint+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'+
+  '<circle cx="'+x(0).toFixed(1)+'" cy="'+y(first.total).toFixed(1)+'" r="3" fill="'+C.faint+'"/>'+
+  '<circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="5" fill="'+C.jade+'" stroke="'+C.surface+'" stroke-width="2"/>'+
+  '<text x="'+lx.toFixed(1)+'" y="'+labelY.toFixed(1)+'" text-anchor="end" font-size="13" font-weight="700" fill="'+C.text+'">'+nt(last.total)+'</text>'+
+  '<text x="'+padL+'" y="'+(H-4)+'" font-size="10" fill="'+C.faint+'">'+esc(shortDate(first.date))+'</text>'+
+  '<text x="'+(W-padR)+'" y="'+(H-4)+'" text-anchor="end" font-size="10" fill="'+C.faint+'">'+esc(shortDate(last.date))+'</text>'+
+  '</svg>';
+}
+function netWorthHistoryHTML(){
+ var hist=(db.netWorthHistory||[]).filter(function(h){return h&&typeof h.total==="number";});
+ if(hist.length<2){
+   return '<div class="lbl">淨值歷史趨勢</div><div class="card" style="padding:16px">'+
+     '<div style="font-size:13px;color:'+C.muted+';line-height:1.6">目前只有'+(hist.length||"還沒有")+(hist.length?" 筆":"")+'紀錄。之後每次「校正起點」或存持股明細,這裡會累積一條真實的淨值走勢——不是公式外推,是你實際記下來的每一個點。</div></div>';
+ }
+ var diff=hist[hist.length-1].total-hist[0].total;
+ return '<div class="lbl">淨值歷史趨勢 · 共 '+hist.length+' 筆</div><div class="card" style="padding:16px">'+
+   netWorthHistorySVG(hist)+
+   '<div style="font-size:12px;color:'+(diff>=0?C.jade:C.clay)+';margin-top:6px">從第一筆記錄至今 '+(diff>=0?"+":"")+nt(diff)+'</div></div>';
 }
 
 /* 股息:標的是「入帳月份」。勾了每年重複,就每年同一個月再來一次 */
@@ -120,7 +167,7 @@ var ICON={
  "現":"M2 7h20v10H2zM12 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
  "trash":"M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6",
  "warn":"M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
- "check":"M20 6 9 17l-5-5","x":"M18 6 6 18M6 6l12 12",
+ "check":"M20 6 9 17l-5-5","x":"M18 6 6 18M6 6l12 12","back":"M15 18l-6-6 6-6",
  "gear":"M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
 };
 function ic(path,color,size){size=size||22;return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="'+path+'"/></svg>';}
@@ -166,7 +213,7 @@ function normalize(d){
  var m=Object.assign({},DEFAULTS,d);
  m.settings=Object.assign({},DEFAULTS.settings,d.settings||{});
  m.assets=Object.assign({},DEFAULTS.assets,d.assets||{});
- ["expenses","cards","installments","plans","dividends","holdings","goals"].forEach(function(k){if(!Array.isArray(m[k]))m[k]=JSON.parse(JSON.stringify(DEFAULTS[k]));});
+ ["expenses","cards","installments","plans","dividends","holdings","netWorthHistory","goals"].forEach(function(k){if(!Array.isArray(m[k]))m[k]=JSON.parse(JSON.stringify(DEFAULTS[k]));});
  return m;
 }
 function load(){try{
@@ -367,8 +414,13 @@ function divCardHTML(stockCost){
    rows+'</div>';
 }
 
-/* ---------- ASSETS ---------- */
+/* ---------- ASSETS ----------
+   分兩層:overview(淨值總覽,平常看這頁就夠)/ holdings(持股與配置細節,想深入研究才點進去)。
+   ui.assetsView 記住現在在哪一層,切換分頁時重置回 overview。 */
 function assetsHTML(){
+ return ui.assetsView==="holdings" ? assetsHoldingsHTML() : assetsOverviewHTML();
+}
+function assetsOverviewHTML(){
  var a=db.assets, st=stockTotals(), stockValue=st.value, stockCost=st.cost;
  var principal=a.savingsAccum+stockCost+a.travelFund+a.cash;
  var total=a.savingsAccum+stockValue+a.travelFund+a.cash;
@@ -391,16 +443,30 @@ function assetsHTML(){
   '<div class="hero" style="background:'+C.ink+'"><div style="font-size:13px;opacity:.8">總資產</div><div class="tnum" style="font-size:44px;font-weight:700;letter-spacing:-.03em">'+nt(total)+'</div>'+
     '<div style="display:flex;gap:14px;margin-top:8px;font-size:12px"><span style="opacity:.85">本金投入 '+nt(principal)+'</span><span style="color:'+(pnl>=0?"#9FE0C4":"#F0B49A")+'">股票'+(pnl>=0?"未實現獲利 +":"帳面回落 ")+nt(pnl)+'</span></div>'+
     '<div style="margin-top:10px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.14);border-radius:20px;padding:4px 10px;font-size:12px">✨ 每個月本金自動 +'+nt(mp)+(mp>0?' · 一年 +'+nt(mp*12):"")+'</div></div>'+
-  divCardHTML(stockCost)+
+  netWorthHistoryHTML()+
   '<div class="lbl">目標 Goal · 含預估達成時間</div>'+goalsHTML+
   '<button class="press" data-act="goalEdit" style="width:100%;margin-top:2px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:12px 0;font-size:14px;font-weight:600">編輯目標與任務</button>'+
   '<div class="lbl">各桶佔比</div><div class="card" style="padding:16px"><div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-bottom:14px">'+barSeg+'</div>'+bkRows+'</div>'+
-  holdingsSectionHTML(stockValue)+
+  '<button class="press" data-act="assetsView" data-v="holdings" style="width:100%;margin-top:10px;background:'+C.surface+';border:1px solid '+C.line+';border-radius:14px;padding:14px;display:flex;align-items:center;justify-content:space-between;text-align:left">'+
+    '<div><div style="font-size:14px;font-weight:600">股票持股 · 配置分析 · 股息</div><div style="font-size:12px;color:'+C.muted+';margin-top:2px">'+((db.holdings||[]).length?"共 "+db.holdings.length+" 檔":"想深入看再點進去")+'</div></div>'+
+    '<span style="color:'+C.faint+';font-size:18px">›</span></button>'+
   '<div class="lbl">本月固定存錢 · 打勾確認真的有做</div><div class="card" style="padding:8px">'+checkRows+
     (all?'<div style="margin:8px;padding:10px 12px;background:#E4EEE9;border-radius:12px;font-size:13px;color:'+C.jade+';font-weight:600;text-align:center">本月 +'+nt(mp)+' 本金已確認 · 資產又疊高一層 💪</div>':'')+'</div>'+
   '<button class="press" data-act="assetEdit" style="width:100%;margin-top:12px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:14px 0;font-size:15px;font-weight:600">校正起點(股票、存款現值)</button>'+
   '<button class="press" data-act="pwReset" style="width:100%;margin-top:8px;color:'+C.faint+';font-size:12px;padding:8px 0">忘記密碼?清空資產資料重設</button>'+
   '<div class="foot">資產一個月看一次就好,股票市值月底更新,或問 Claude 幫你查。</div></div>';
+}
+function assetsHoldingsHTML(){
+ var st=stockTotals(), stockValue=st.value, stockCost=st.cost, hs=db.holdings||[];
+ return '<div class="fadein">'+
+  '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'+
+    '<button class="press" data-act="assetsView" data-v="overview" style="padding:4px;color:'+C.muted+'">'+ic(ICON.back,C.muted,22)+'</button>'+
+    '<div><div style="font-size:20px;font-weight:700;letter-spacing:-.02em">股票持股</div><div style="font-size:12px;color:'+C.muted+';margin-top:2px">明細、配置分析、股息</div></div></div>'+
+  holdingsSectionHTML(stockValue)+
+  holdingsAllocationHTML(hs,stockValue)+
+  assetAdviceHTML(hs,stockValue)+
+  divCardHTML(stockCost)+
+  '<div class="foot">股票市值一個月更新一次就好,或問 Claude 幫你查。</div></div>';
 }
 /* 每月固定投入 mp,推算還要幾個月才會到 target */
 function etaMonths(need,mp){return mp>0?Math.max(0,Math.ceil(need/mp)):null;}
@@ -570,8 +636,20 @@ function holdingsSectionHTML(stockValue){
      '<div style="text-align:right"><div class="tnum" style="font-size:14px;font-weight:700">'+nt(r.val)+'</div><div class="tnum" style="font-size:11px;color:'+(r.pnl>=0?C.jade:C.clay)+'">'+(r.pnl>=0?"+":"")+nt(r.pnl)+' ('+r.pct.toFixed(1)+'%)</div></div></div>';
  }).join("");
  return '<div class="lbl">持股明細 · 共 '+nt(stockValue)+'</div><div class="card" style="overflow:hidden">'+rows+'</div>'+
-   '<button class="press" data-act="holdingsEdit" style="width:100%;margin-top:8px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:11px 0;font-size:14px;font-weight:600">編輯持股明細</button>'+
-   assetAdviceHTML(hs,stockValue);
+   '<button class="press" data-act="holdingsEdit" style="width:100%;margin-top:8px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:11px 0;font-size:14px;font-weight:600">編輯持股明細</button>';
+}
+/* 用堆疊長條(而非圓餅)呈現部位佔比,跟「各桶佔比」用同一套視覺語言 */
+function holdingsAllocationHTML(hs,total){
+ if(!hs.length||total<=0)return "";
+ var byType={};
+ hs.forEach(function(h){var v=(Number(h.shares)||0)*(Number(h.price)||0);byType[h.type]=(byType[h.type]||0)+v;});
+ var segs=HOLDING_TYPES.filter(function(t){return byType[t]>0;}).map(function(t){return {type:t,value:byType[t],color:TYPE_COLORS[t]};});
+ if(!segs.length)return "";
+ var barSeg=segs.map(function(s,i){return '<div style="width:'+(s.value/total*100)+'%;background:'+s.color+(i>0?';margin-left:2px':'')+'"></div>';}).join("");
+ var rows=segs.map(function(s,i){var pct=s.value/total*100;
+   return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:'+(i===0?"none":"1px solid "+C.line)+'"><div style="width:10px;height:10px;border-radius:3px;background:'+s.color+';flex-shrink:0"></div><span style="flex:1;font-size:14px">'+esc(s.type)+'</span><span style="font-size:12px;color:'+C.faint+'">'+pct.toFixed(0)+'%</span><span class="tnum" style="font-size:14px;font-weight:700;min-width:80px;text-align:right">'+nt(s.value)+'</span></div>';
+ }).join("");
+ return '<div class="lbl">股票配置 · 依類型</div><div class="card" style="padding:16px"><div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-bottom:14px">'+barSeg+'</div>'+rows+'</div>';
 }
 /* 根據登記的持股類型與集中度給原則性觀察,非個人化投資建議 */
 function assetAdviceHTML(hs,total){
@@ -768,7 +846,7 @@ function applySetup(){
 function backupHTML(){
  var json=backupJSON();
  var ta='width:100%;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px 12px;border-radius:12px;border:1px solid '+C.line+';outline:none;background:'+C.surface+';resize:vertical;line-height:1.4';
- var stat=[["記錄",db.expenses.length+" 筆"],["信用卡",db.cards.length+" 張"],["分期",db.installments.length+" 筆"],["大筆規劃",db.plans.length+" 筆"],["股息",db.dividends.length+" 筆"]];
+ var stat=[["記錄",db.expenses.length+" 筆"],["信用卡",db.cards.length+" 張"],["分期",db.installments.length+" 筆"],["大筆規劃",db.plans.length+" 筆"],["股息",db.dividends.length+" 筆"],["持股",db.holdings.length+" 檔"]];
  var statRows=stat.map(function(x,i){return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-top:'+(i===0?"none":"1px solid "+C.line)+';font-size:13px"><span style="color:'+C.muted+'">'+x[0]+'</span><span style="font-weight:600">'+x[1]+'</span></div>';}).join("");
  return sheetHead("備份與還原")+
   '<div style="font-size:12px;color:'+C.muted+';line-height:1.6;background:#F3EEE2;border-radius:12px;padding:10px 12px">你的資料只存在這台裝置,沒有雲端可以幫你留一份。換手機、清掉 Safari 資料、或太久沒打開,都可能整組消失。定期匯出一份存到「檔案」或雲碟,就永遠救得回來。</div>'+
@@ -826,7 +904,8 @@ document.addEventListener("click",function(ev){
  var act=el.getAttribute("data-act");
  if(act==="closeBg"){ if(ev.target.closest("[data-stop]"))return; ui.sheet=null;render();return; }
  if(act==="close"){ui.sheet=null;render();return;}
- if(act==="tab"){var tb=el.getAttribute("data-tab");if(tb==="assets"&&!ui.unlocked){ui.sheet={type:"lock"};render();return;}ui.tab=tb;render();return;}
+ if(act==="tab"){var tb=el.getAttribute("data-tab");if(tb==="assets"){ui.assetsView="overview";if(!ui.unlocked){ui.sheet={type:"lock"};render();return;}}ui.tab=tb;render();return;}
+ if(act==="assetsView"){ui.assetsView=el.getAttribute("data-v");render();return;}
  if(act==="play"){db.play=!db.play;persist();render();return;}
  if(act==="add"){ui.addForm={cat:el.getAttribute("data-cat"),amt:"",note:"",pay:db.cards.length?"card":"cash",card:db.cards.length?db.cards[0].name:null,date:new Date().toISOString().slice(0,10)};ui.sheet={type:"add"};render();return;}
  if(act==="qamt"){var i=document.getElementById("amt");if(i){i.value=el.getAttribute("data-q");ui.addForm.amt=el.getAttribute("data-q");i.focus();}return;}
@@ -858,14 +937,14 @@ document.addEventListener("click",function(ev){
    persist();ui.sheet=null;render();return;}
  if(act==="calShift"){ui.calCyc=shiftCycle(ui.calCyc||curCycle(),+el.getAttribute("data-n"));ui.calSel=null;render();return;}
  if(act==="calDay"){var dd=el.getAttribute("data-d");ui.calSel=(ui.calSel===dd?null:dd);render();return;}
- if(act==="lock"){ui.unlocked=false;ui.tab="today";render();return;}
+ if(act==="lock"){ui.unlocked=false;ui.tab="today";ui.assetsView="overview";render();return;}
  if(act==="chk"){ui.checks=ui.checks||{};var k=el.getAttribute("data-k");ui.checks[k]=!ui.checks[k];render();return;}
  if(act==="assetEdit"){ui.sheet={type:"assetEdit"};render();return;}
- if(act==="saveAsset"){["savingsAccum","stockCost","stockValue","travelFund","cash"].forEach(function(k){var e=document.getElementById("ae_"+k);if(e)db.assets[k]=Number(e.value.replace(/[^0-9]/g,""))||0;});db.assets.example=false;persist();ui.sheet=null;render();return;}
+ if(act==="saveAsset"){["savingsAccum","stockCost","stockValue","travelFund","cash"].forEach(function(k){var e=document.getElementById("ae_"+k);if(e)db.assets[k]=Number(e.value.replace(/[^0-9]/g,""))||0;});db.assets.example=false;snapshotNetWorth();persist();ui.sheet=null;render();return;}
  if(act==="holdingsEdit"){ui.holdingsDraft=JSON.parse(JSON.stringify(db.holdings||[]));ui.sheet={type:"holdings"};render();return;}
  if(act==="addHolding"){syncHoldingsDraft();ui.holdingsDraft.push({id:uid(),name:"新持股",type:HOLDING_TYPES[0],shares:0,avgCost:0,price:0});render();return;}
  if(act==="delHolding"){syncHoldingsDraft();ui.holdingsDraft.splice(+el.getAttribute("data-i"),1);render();return;}
- if(act==="saveHoldings"){syncHoldingsDraft();db.holdings=ui.holdingsDraft;db.assets.example=false;persist();ui.sheet=null;render();return;}
+ if(act==="saveHoldings"){syncHoldingsDraft();db.holdings=ui.holdingsDraft;db.assets.example=false;snapshotNetWorth();persist();ui.sheet=null;render();return;}
  if(act==="pwReset"){ui.sheet={type:"pwReset"};render();return;}
  if(act==="doPwReset"){db.assets=JSON.parse(JSON.stringify(DEFAULTS.assets));localStorage.removeItem(PWKEY);persist();ui.unlocked=false;ui.sheet=null;ui.tab="today";render();return;}
  if(act==="lockSubmit"){var mode=el.getAttribute("data-mode");var pw=(document.getElementById("pw")||{}).value||"";var errEl=document.getElementById("pwerr");
@@ -954,7 +1033,7 @@ document.addEventListener("change",function(ev){
 /* ---------- init ---------- */
 try{
   db=load();
-  ui={tab:"today",sheet:null,unlocked:false,calCyc:curCycle(),calSel:null,checks:{},addForm:null,goalDraft:null,setupDraft:null,noStore:false};
+  ui={tab:"today",sheet:null,unlocked:false,assetsView:"overview",calCyc:curCycle(),calSel:null,checks:{},addForm:null,goalDraft:null,setupDraft:null,holdingsDraft:null,noStore:false};
   try{localStorage.setItem("__t","1");localStorage.removeItem("__t");}catch(e){ui.noStore=true;}
   render();
 }catch(err){
