@@ -1,4 +1,4 @@
-# Google-App-scripts
+# money-tracker
 
 ## 錢包誠實表(index.html)
 
@@ -24,7 +24,7 @@ App 裡自己填,只存在你這台裝置的瀏覽器 localStorage,不會上傳�
 2. **Settings → Pages**
 3. Source 選 **Deploy from a branch**
 4. Branch 選 `main`(或要部署的分支),資料夾 `/ (root)`,按 **Save**
-5. 等 1–2 分鐘,網址是 `https://wanjung-820.github.io/Google-App-scripts/`
+5. 等 1–2 分鐘,網址是 `https://wanjung-820.github.io/money-tracker/`
 
 ### 手機加入主畫面(iPhone)
 
