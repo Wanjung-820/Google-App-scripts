@@ -1,6 +1,6 @@
 # money-tracker
 
-## 錢包誠實表(index.html)
+## Money Tracker(index.html)
 
 個人理財追蹤工具。單一 HTML 檔、純 JavaScript、零依賴、不需要後端。
 
