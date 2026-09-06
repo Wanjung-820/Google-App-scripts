@@ -67,6 +67,7 @@ var DEFAULTS={
  installments:[], /* {id,name,amt,startYM,count,card} */
  plans:[],        /* {id,ym,name,amount,card} amount 為負代表進帳 */
  dividends:[],    /* {id,name,ym,amount,yearly} 股息:入帳的那個月 */
+ holdings:[],     /* {id,name,type,shares,avgCost,price} 個股/ETF 持股明細 */
  goals:[{id:uid(),name:"存到 100 萬",target:1000000,tasks:[
    {id:uid(),name:"第一桶 50 萬",target:500000},
    {id:uid(),name:"衝到 70 萬",target:700000},
@@ -74,6 +75,7 @@ var DEFAULTS={
    {id:uid(),name:"達標 100 萬",target:1000000}]}]
 };
 var CARD_COLORS=[C.blue,C.jade,C.clay,C.gold,C.inkSoft];
+var HOLDING_TYPES=["大盤型ETF","高股息ETF","主題型ETF","個股","債券","海外資產","其他"];
 
 function nextMonth(ym){var p=ym.split("-"),y=+p[0],m=+p[1];m++;if(m>12){m=1;y++;}return y+"-"+String(m).padStart(2,"0");}
 function ymLabel(ym){return +ym.split("-")[1]+"月";}
@@ -81,6 +83,17 @@ function instMonths(it){var out=[],ym=it.startYM;for(var i=0;i<it.count;i++){out
 function activeInstall(ym){return (db.installments||[]).reduce(function(s,it){return s+(instMonths(it).indexOf(ym)>=0?it.amt:0);},0);}
 function cardColor(name){var c=(db.cards||[]).filter(function(x){return x.name===name;})[0];return c?c.color:C.faint;}
 function disposableMonthly(){var s=db.settings;return s.income-s.rent-s.filial-s.savingsFixed-s.invest-s.travelFundMonthly;}
+
+/* 登記了持股明細就用明細加總,沒登記就退回校正起點填的單一數字,兩者不衝突 */
+function stockTotals(){
+ var hs=db.holdings||[];
+ if(hs.length){
+   var value=0,cost=0;
+   hs.forEach(function(h){value+=(Number(h.shares)||0)*(Number(h.price)||0);cost+=(Number(h.shares)||0)*(Number(h.avgCost)||0);});
+   return {value:value,cost:cost};
+ }
+ return {value:db.assets.stockValue||0,cost:db.assets.stockCost||0};
+}
 
 /* 股息:標的是「入帳月份」。勾了每年重複,就每年同一個月再來一次 */
 function dividendsIn(ym){
@@ -153,7 +166,7 @@ function normalize(d){
  var m=Object.assign({},DEFAULTS,d);
  m.settings=Object.assign({},DEFAULTS.settings,d.settings||{});
  m.assets=Object.assign({},DEFAULTS.assets,d.assets||{});
- ["expenses","cards","installments","plans","dividends","goals"].forEach(function(k){if(!Array.isArray(m[k]))m[k]=JSON.parse(JSON.stringify(DEFAULTS[k]));});
+ ["expenses","cards","installments","plans","dividends","holdings","goals"].forEach(function(k){if(!Array.isArray(m[k]))m[k]=JSON.parse(JSON.stringify(DEFAULTS[k]));});
  return m;
 }
 function load(){try{
@@ -356,12 +369,12 @@ function divCardHTML(stockCost){
 
 /* ---------- ASSETS ---------- */
 function assetsHTML(){
- var a=db.assets;
- var principal=a.savingsAccum+a.stockCost+a.travelFund+a.cash;
- var total=a.savingsAccum+a.stockValue+a.travelFund+a.cash;
- var pnl=a.stockValue-a.stockCost;
+ var a=db.assets, st=stockTotals(), stockValue=st.value, stockCost=st.cost;
+ var principal=a.savingsAccum+stockCost+a.travelFund+a.cash;
+ var total=a.savingsAccum+stockValue+a.travelFund+a.cash;
+ var pnl=stockValue-stockCost;
  var mp=db.settings.savingsFixed+db.settings.invest;
- var buckets=[{l:"存錢累積",v:a.savingsAccum,c:C.ink},{l:"股票",v:a.stockValue,c:C.blue},{l:"出國基金",v:a.travelFund,c:C.gold},{l:"現金",v:a.cash,c:C.jade}];
+ var buckets=[{l:"存錢累積",v:a.savingsAccum,c:C.ink},{l:"股票",v:stockValue,c:C.blue},{l:"出國基金",v:a.travelFund,c:C.gold},{l:"現金",v:a.cash,c:C.jade}];
  var ch=ui.checks||{};
  var all=ch.save&&ch.invest&&ch.fund;
  var share=function(v){return total>0?v/total*100:0;};
@@ -378,10 +391,11 @@ function assetsHTML(){
   '<div class="hero" style="background:'+C.ink+'"><div style="font-size:13px;opacity:.8">總資產</div><div class="tnum" style="font-size:44px;font-weight:700;letter-spacing:-.03em">'+nt(total)+'</div>'+
     '<div style="display:flex;gap:14px;margin-top:8px;font-size:12px"><span style="opacity:.85">本金投入 '+nt(principal)+'</span><span style="color:'+(pnl>=0?"#9FE0C4":"#F0B49A")+'">股票'+(pnl>=0?"未實現獲利 +":"帳面回落 ")+nt(pnl)+'</span></div>'+
     '<div style="margin-top:10px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.14);border-radius:20px;padding:4px 10px;font-size:12px">✨ 每個月本金自動 +'+nt(mp)+(mp>0?' · 一年 +'+nt(mp*12):"")+'</div></div>'+
-  divCardHTML(a.stockCost)+
+  divCardHTML(stockCost)+
   '<div class="lbl">目標 Goal · 含預估達成時間</div>'+goalsHTML+
   '<button class="press" data-act="goalEdit" style="width:100%;margin-top:2px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:12px 0;font-size:14px;font-weight:600">編輯目標與任務</button>'+
   '<div class="lbl">各桶佔比</div><div class="card" style="padding:16px"><div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-bottom:14px">'+barSeg+'</div>'+bkRows+'</div>'+
+  holdingsSectionHTML(stockValue)+
   '<div class="lbl">本月固定存錢 · 打勾確認真的有做</div><div class="card" style="padding:8px">'+checkRows+
     (all?'<div style="margin:8px;padding:10px 12px;background:#E4EEE9;border-radius:12px;font-size:13px;color:'+C.jade+';font-weight:600;text-align:center">本月 +'+nt(mp)+' 本金已確認 · 資產又疊高一層 💪</div>':'')+'</div>'+
   '<button class="press" data-act="assetEdit" style="width:100%;margin-top:12px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:14px 0;font-size:15px;font-weight:600">校正起點(股票、存款現值)</button>'+
@@ -477,6 +491,7 @@ function sheetHTML(){
  else if(t==="goalEdit")body=goalEditHTML();
  else if(t==="setup")body=setupHTML();
  else if(t==="backup")body=backupHTML();
+ else if(t==="holdings")body=holdingsEditHTML();
  else if(t==="pwReset")body=pwResetHTML();
  return '<div class="sheet-bg" data-act="closeBg"><div class="sheet" data-stop="1"><div class="grab"></div>'+body+'</div></div>';
 }
@@ -523,12 +538,93 @@ function addSheetHTML(){
   (editing?'<button class="press" data-act="del" data-id="'+f.id+'" style="width:100%;margin-top:8px;color:'+C.clay+';font-size:13px;padding:10px 0;font-weight:600">刪除這一筆</button>':'');
 }
 function assetEditHTML(){
- var a=db.assets;
- var rows=[["savingsAccum","存錢累積(定存+定期定額至今)"],["stockCost","股票投入本金(買進成本)"],["stockValue","股票目前市值"],["travelFund","出國基金餘額"],["cash","現金/活存"]];
+ var a=db.assets, hasHoldings=(db.holdings||[]).length>0;
+ var rows=[["savingsAccum","存錢累積(定存+定期定額至今)"],["travelFund","出國基金餘額"],["cash","現金/活存"]];
+ var stockBlock=hasHoldings
+   ? '<div style="padding:12px 0;border-bottom:1px solid '+C.line+'"><div style="font-size:13px;margin-bottom:6px;color:'+C.muted+'">股票投入本金 / 目前市值</div>'+
+       '<div style="font-size:13px;color:'+C.gold+';background:#F3EEE2;border-radius:10px;padding:10px 12px">已用「持股明細」逐檔加總,這裡不用手動填。要調整請到資產頁下方的「編輯持股明細」。</div></div>'
+   : '<div style="padding:10px 0;border-bottom:1px solid '+C.line+'"><div style="font-size:13px;margin-bottom:6px">股票投入本金(買進成本)</div><input id="ae_stockCost" inputmode="decimal" value="'+a.stockCost+'" class="tnum" style="width:100%;font-size:17px;font-weight:700;padding:10px 12px;border-radius:10px;border:1px solid '+C.line+';outline:none;background:'+C.surface+'"/></div>'+
+     '<div style="padding:10px 0;border-bottom:1px solid '+C.line+'"><div style="font-size:13px;margin-bottom:6px">股票目前市值</div><input id="ae_stockValue" inputmode="decimal" value="'+a.stockValue+'" class="tnum" style="width:100%;font-size:17px;font-weight:700;padding:10px 12px;border-radius:10px;border:1px solid '+C.line+';outline:none;background:'+C.surface+'"/></div>'+
+     '<div style="padding:10px 0;border-bottom:1px solid '+C.line+';font-size:12px;color:'+C.muted+';line-height:1.5">想知道自己買了哪些、每檔賺賠多少?可以到資產頁下方「開始登記持股」,逐檔填了以後這裡就會自動改用加總的數字。</div>';
  return sheetHead("校正資產起點")+
-  '<div style="font-size:12px;color:'+C.muted+';margin-bottom:12px;line-height:1.5">打開券商/銀行 App 抄一次目前的數字就好。之後每月更新「股票市值」一個數字即可,其他自動長。</div>'+
+  '<div style="font-size:12px;color:'+C.muted+';margin-bottom:12px;line-height:1.5">打開券商/銀行 App 抄一次目前的數字就好。之後每月更新一次即可,其他自動長。</div>'+
+  stockBlock+
   rows.map(function(r){return '<div style="padding:10px 0;border-bottom:1px solid '+C.line+'"><div style="font-size:13px;margin-bottom:6px">'+r[1]+'</div><input id="ae_'+r[0]+'" inputmode="decimal" value="'+a[r[0]]+'" class="tnum" style="width:100%;font-size:17px;font-weight:700;padding:10px 12px;border-radius:10px;border:1px solid '+C.line+';outline:none;background:'+C.surface+'"/></div>';}).join("")+
   '<button class="press btn" data-act="saveAsset" style="margin-top:16px;background:'+C.ink+';color:#fff">存起來</button>';
+}
+
+/* ---------- 持股明細 ---------- */
+function holdingRow(h){
+ var val=(Number(h.shares)||0)*(Number(h.price)||0), cost=(Number(h.shares)||0)*(Number(h.avgCost)||0);
+ return {val:val,cost:cost,pnl:val-cost,pct:cost>0?((val-cost)/cost*100):0};
+}
+function holdingsSectionHTML(stockValue){
+ var hs=db.holdings||[];
+ if(!hs.length){
+   return '<div class="lbl">持股明細</div><div class="card" style="padding:16px">'+
+     '<div style="font-size:13px;color:'+C.muted+';line-height:1.6;margin-bottom:12px">目前「股票」是校正起點裡填的單一數字。想知道自己買了哪些、每檔賺賠多少,可以逐檔登記——股數、平均成本、目前股價,照你證券 App 的「未實現損益」頁面抄就好。</div>'+
+     '<button class="press btn" data-act="holdingsEdit" style="background:'+C.ink+';color:#fff">開始登記持股</button></div>';
+ }
+ var rows=hs.map(function(h,i){var r=holdingRow(h);
+   return '<div class="row"><div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600">'+esc(h.name)+'</div><div style="font-size:11px;color:'+C.faint+'">'+esc(h.type)+' · '+(Number(h.shares)||0)+' 股</div></div>'+
+     '<div style="text-align:right"><div class="tnum" style="font-size:14px;font-weight:700">'+nt(r.val)+'</div><div class="tnum" style="font-size:11px;color:'+(r.pnl>=0?C.jade:C.clay)+'">'+(r.pnl>=0?"+":"")+nt(r.pnl)+' ('+r.pct.toFixed(1)+'%)</div></div></div>';
+ }).join("");
+ return '<div class="lbl">持股明細 · 共 '+nt(stockValue)+'</div><div class="card" style="overflow:hidden">'+rows+'</div>'+
+   '<button class="press" data-act="holdingsEdit" style="width:100%;margin-top:8px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:11px 0;font-size:14px;font-weight:600">編輯持股明細</button>'+
+   assetAdviceHTML(hs,stockValue);
+}
+/* 根據登記的持股類型與集中度給原則性觀察,非個人化投資建議 */
+function assetAdviceHTML(hs,total){
+ if(!hs.length||total<=0)return "";
+ var byType={};
+ hs.forEach(function(h){var v=(Number(h.shares)||0)*(Number(h.price)||0);byType[h.type]=(byType[h.type]||0)+v;});
+ var notes=[];
+ var sorted=hs.slice().sort(function(a,b){return ((b.shares*b.price)||0)-((a.shares*a.price)||0);});
+ var top=sorted[0], topV=(Number(top.shares)||0)*(Number(top.price)||0), topPct=topV/total*100;
+ if(topPct>=35)notes.push(esc(top.name)+" 佔股票部位 "+topPct.toFixed(0)+"%,單一標的集中度偏高,這檔漲跌會主導你整體資產的波動。");
+ Object.keys(byType).forEach(function(ty){
+   var cnt=hs.filter(function(h){return h.type===ty;}).length, pct=byType[ty]/total*100;
+   if(cnt>=2&&pct>=40)notes.push(esc(ty)+"有 "+cnt+" 檔,合計佔 "+pct.toFixed(0)+"%。同類型的 ETF 成分股通常高度重疊,持有多檔不代表分散,可能只是把同一種風險放大而已。");
+ });
+ if(!byType["海外資產"]&&!byType["債券"])notes.push("目前登記的持股全部集中在台股,沒有海外資產或債券部位,單一市場、單一貨幣的曝險偏高,可以想想是否要跨市場、跨資產類別分散一些。");
+ if(byType["高股息ETF"])notes.push("高股息 ETF 的配息不等於獲利,配息後淨值會下降。判斷績效建議看「含息總報酬」(市值漲跌 + 累積配息),不要只看有沒有配到錢——跟你之前提過的信用卡黑盒子是同一種心理:錢進來不代表變有錢。");
+ if(!notes.length)return "";
+ return '<div class="card" style="padding:16px;margin-top:10px;background:#F3EEE2;border-color:'+C.line+'">'+
+   '<div style="font-size:14px;font-weight:700;margin-bottom:4px">資產配置的客觀觀察</div>'+
+   '<div style="font-size:11px;color:'+C.muted+';margin-bottom:10px">根據你登記的持股自動產生,是原則性的參考,不是針對你個人狀況的投資建議。</div>'+
+   notes.map(function(n,i){return '<div style="display:flex;gap:8px;padding:8px 0;border-top:'+(i===0?"none":"1px solid "+C.line)+';font-size:13px;line-height:1.5">'+ic(ICON.warn,C.gold,15)+'<span>'+n+'</span></div>';}).join("")+
+   '</div>';
+}
+function holdingsEditHTML(){
+ var d=ui.holdingsDraft;
+ var sm='font-size:14px;padding:8px 10px;border-radius:9px;border:1px solid '+C.line+';outline:none;background:#fff';
+ var typeOpts=function(sel){return HOLDING_TYPES.map(function(t){return '<option'+(t===sel?" selected":"")+'>'+t+'</option>';}).join("");};
+ var rows=d.length?d.map(function(h,i){var r=holdingRow(h);
+   return '<div style="border:1px solid '+C.line+';border-radius:12px;padding:10px;margin-bottom:8px;background:#fff">'+
+     '<div style="display:flex;gap:8px;margin-bottom:8px">'+
+       '<input data-h="'+i+'" data-f="name" value="'+esc(h.name)+'" placeholder="例:0050 元大台灣50" style="'+sm+';flex:1"/>'+
+       '<button class="press" data-act="delHolding" data-i="'+i+'" style="color:'+C.clay+';font-size:12px;padding:0 4px">刪除</button></div>'+
+     '<select data-h="'+i+'" data-f="type" style="'+sm+';width:100%;margin-bottom:8px">'+typeOpts(h.type)+'</select>'+
+     '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">'+
+       '<div><div style="font-size:11px;color:'+C.muted+';margin-bottom:3px">股數</div><input data-h="'+i+'" data-f="shares" inputmode="numeric" value="'+h.shares+'" class="tnum" style="'+sm+';width:100%;text-align:right"/></div>'+
+       '<div><div style="font-size:11px;color:'+C.muted+';margin-bottom:3px">平均成本</div><input data-h="'+i+'" data-f="avgCost" inputmode="decimal" value="'+h.avgCost+'" class="tnum" style="'+sm+';width:100%;text-align:right"/></div>'+
+       '<div><div style="font-size:11px;color:'+C.muted+';margin-bottom:3px">目前股價</div><input data-h="'+i+'" data-f="price" inputmode="decimal" value="'+h.price+'" class="tnum" style="'+sm+';width:100%;text-align:right"/></div></div>'+
+     '<div style="padding-top:8px;border-top:1px solid '+C.line+';display:flex;justify-content:space-between;font-size:12px">'+
+       '<span style="color:'+C.muted+'">市值 '+nt(r.val)+'</span><span style="color:'+(r.pnl>=0?C.jade:C.clay)+';font-weight:600">'+(r.pnl>=0?"+":"")+nt(r.pnl)+' ('+r.pct.toFixed(1)+'%)</span></div>'+
+   '</div>';
+ }).join(""):'<div style="font-size:12px;color:'+C.faint+';margin-bottom:8px">還沒有持股,點下面新增。</div>';
+ return sheetHead("持股明細")+
+  '<div style="font-size:12px;color:'+C.muted+';margin-bottom:12px;line-height:1.5">照證券 App「未實現損益」頁面填就好,股數、平均成本、目前股價那裡都找得到。存檔後資產頁會自動加總,並給你一份配置分析。</div>'+
+  rows+
+  '<button class="press" data-act="addHolding" style="width:100%;background:#fff;border:1px dashed '+C.line+';border-radius:12px;padding:11px 0;font-size:14px;font-weight:600;color:'+C.muted+';margin-bottom:12px">+ 新增一檔</button>'+
+  '<button class="press btn" data-act="saveHoldings" style="background:'+C.ink+';color:#fff">儲存</button>';
+}
+function syncHoldingsDraft(){
+ document.querySelectorAll("[data-h]").forEach(function(el){
+   var i=+el.getAttribute("data-h"), f=el.getAttribute("data-f"), h=ui.holdingsDraft[i];
+   if(!h)return;
+   h[f]=(f==="name"||f==="type")?el.value:numv(el.value);
+ });
 }
 function goalEditHTML(){
  var g=ui.goalDraft;
@@ -766,6 +862,10 @@ document.addEventListener("click",function(ev){
  if(act==="chk"){ui.checks=ui.checks||{};var k=el.getAttribute("data-k");ui.checks[k]=!ui.checks[k];render();return;}
  if(act==="assetEdit"){ui.sheet={type:"assetEdit"};render();return;}
  if(act==="saveAsset"){["savingsAccum","stockCost","stockValue","travelFund","cash"].forEach(function(k){var e=document.getElementById("ae_"+k);if(e)db.assets[k]=Number(e.value.replace(/[^0-9]/g,""))||0;});db.assets.example=false;persist();ui.sheet=null;render();return;}
+ if(act==="holdingsEdit"){ui.holdingsDraft=JSON.parse(JSON.stringify(db.holdings||[]));ui.sheet={type:"holdings"};render();return;}
+ if(act==="addHolding"){syncHoldingsDraft();ui.holdingsDraft.push({id:uid(),name:"新持股",type:HOLDING_TYPES[0],shares:0,avgCost:0,price:0});render();return;}
+ if(act==="delHolding"){syncHoldingsDraft();ui.holdingsDraft.splice(+el.getAttribute("data-i"),1);render();return;}
+ if(act==="saveHoldings"){syncHoldingsDraft();db.holdings=ui.holdingsDraft;db.assets.example=false;persist();ui.sheet=null;render();return;}
  if(act==="pwReset"){ui.sheet={type:"pwReset"};render();return;}
  if(act==="doPwReset"){db.assets=JSON.parse(JSON.stringify(DEFAULTS.assets));localStorage.removeItem(PWKEY);persist();ui.unlocked=false;ui.sheet=null;ui.tab="today";render();return;}
  if(act==="lockSubmit"){var mode=el.getAttribute("data-mode");var pw=(document.getElementById("pw")||{}).value||"";var errEl=document.getElementById("pwerr");
