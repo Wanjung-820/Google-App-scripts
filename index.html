@@ -60,7 +60,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {"&":"&am
 
 /* 這個檔案不含任何個人財務數字。所有金額都由你在 App 裡自己填,只存在這台裝置的 localStorage。 */
 var DEFAULTS={
- settings:{configured:false,income:0,rent:0,filial:0,savingsFixed:0,invest:0,travelFundMonthly:0,domesticReserve:0},
+ settings:{configured:false,income:0,rent:0,filial:0,savingsFixed:0,invest:0,travelFundMonthly:0,domesticReserve:0,cycleStartDay:1},
  assets:{savingsAccum:0,stockValue:0,stockCost:0,travelFund:0,cash:0,example:true},
  expenses:[], play:false,
  cards:[],        /* {id,name,color,closeDay,payDay} */
@@ -96,7 +96,7 @@ function ic(path,color,size){size=size||22;return '<svg width="'+size+'" height=
 
 /* 時間軸不再寫死:從「當前真實月份」往後 8 個月,用你填的分期與規劃項目自動推算。 */
 function buildTimeline(){
- var s=db.settings, base=disposableMonthly(), fund=db.assets.travelFund, ym=nowYM(), out=[];
+ var s=db.settings, base=disposableMonthly(), fund=db.assets.travelFund, ym=curCycle(), out=[];
  for(var i=0;i<8;i++){
   var events=[], instSum=0, endTags=[];
   (db.installments||[]).forEach(function(it){
@@ -116,7 +116,7 @@ function buildTimeline(){
   });
   if(fund<0)fund=0;
   var daily=base-instSum;
-  out.push({ym:ym,m:ymLabel(ym),daily:daily,fund:fund,events:events,
+  out.push({ym:ym,m:ymLabel(ym),range:cycleStartDay()>1?cycleLabel(ym).replace(/^\d+ 月週期/,"").replace(/[()]/g,""):"",daily:daily,fund:fund,events:events,
     danger:base>0&&daily<base*0.62&&income===0,
     dangerWhy:"分期壓在這個月、又沒有額外進帳",
     good:income>0||(endTags.length>0&&instSum>0),
@@ -139,6 +139,36 @@ function persist(){try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){ui
 
 function nowYM(){var n=new Date();return n.getFullYear()+"-"+String(n.getMonth()+1).padStart(2,"0");}
 
+/* ---------- 薪水週期 ----------
+   cycleStartDay = 1 → 就是一般日曆月。
+   cycleStartDay = 25 → 8/25 ~ 9/24 這段算「9 月週期」(以結束的那個月命名)。
+   下面所有 "cyc" 都是 "YYYY-MM" 字串,代表週期而不是日曆月。 */
+function cycleStartDay(){var d=Math.round(Number(db.settings.cycleStartDay))||1;return d<1?1:(d>28?28:d);}
+function pad2(n){return String(n).padStart(2,"0");}
+function cycleFrom(y,m,day){
+ var s=cycleStartDay(), ym=y+"-"+pad2(m);
+ return (s>1&&day>=s)?nextMonth(ym):ym;
+}
+function cycleOfStr(dateStr){var p=String(dateStr).split("-");return cycleFrom(+p[0],+p[1],+p[2]);}
+function curCycle(){var n=new Date();return cycleFrom(n.getFullYear(),n.getMonth()+1,n.getDate());}
+function cycleRange(cyc){
+ var s=cycleStartDay(), p=cyc.split("-"), y=+p[0], m=+p[1], start, end;
+ if(s<=1){start=new Date(y,m-1,1);end=new Date(y,m,0);}
+ else{start=new Date(y,m-2,s);end=new Date(y,m-1,s-1);}
+ start.setHours(0,0,0,0);end.setHours(0,0,0,0);
+ return {start:start,end:end,days:Math.round((end-start)/86400000)+1};
+}
+function cycleLabel(cyc){
+ var s=cycleStartDay(), m=+cyc.split("-")[1];
+ if(s<=1)return m+" 月";
+ var r=cycleRange(cyc);
+ return m+" 月週期("+(r.start.getMonth()+1)+"/"+r.start.getDate()+"–"+(r.end.getMonth()+1)+"/"+r.end.getDate()+")";
+}
+function shiftCycle(cyc,n){var out=cyc;for(var i=0;i<Math.abs(n);i++){out=n>0?nextMonth(out):prevMonth(out);}return out;}
+function prevMonth(ym){var p=ym.split("-"),y=+p[0],m=+p[1];m--;if(m<1){m=12;y--;}return y+"-"+pad2(m);}
+function dstr(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());}
+function cycleExpenses(cyc){return db.expenses.filter(function(e){return cycleOfStr(e.date)===cyc;});}
+
 /* ---------- TODAY ---------- */
 function welcomeHTML(){
  return '<div class="fadein">'+headerHTML("先花 2 分鐘,把你的數字填進來")+
@@ -149,29 +179,31 @@ function welcomeHTML(){
   '<div class="foot">建議用 Safari 開,然後「加入主畫面」當 App 用。資料綁在這個網址 + 這個瀏覽器。</div></div>';
 }
 function todayHTML(){
- var s=db.settings, n=new Date(), ym=nowYM();
+ var s=db.settings, n=new Date();
  if(!s.configured)return welcomeHTML();
+ var cyc=curCycle(), r=cycleRange(cyc);
  var disposable=disposableMonthly();
- var inst=activeInstall(ym), nextInst=activeInstall(nextMonth(ym));
- var monthExp=db.expenses.filter(function(e){return e.date.slice(0,7)===ym;});
+ var inst=activeInstall(cyc), nextInst=activeInstall(nextMonth(cyc));
+ var monthExp=cycleExpenses(cyc);
  var spent=monthExp.reduce(function(a,e){return a+e.amount;},0);
  var pool=disposable-inst, remain=pool-spent;
- var dim=new Date(n.getFullYear(),n.getMonth()+1,0).getDate();
- var daysLeft=dim-n.getDate()+1;
+ var dim=r.days;
+ n.setHours(0,0,0,0);
+ var daysLeft=Math.max(1,Math.round((r.end-n)/86400000)+1);
  var pct=pool>0?Math.min(100,Math.max(0,spent/pool*100)):100;
  var tripLogged=monthExp.some(function(e){return e.cat==="遊";});
  var reserve=(db.play&&!tripLogged)?s.domesticReserve:0;
  var todayCan=Math.max(0,(remain-reserve)/daysLeft);
  var baseline=pool/dim;
  var over=remain<0, hero=over?C.clay:C.ink;
- var msg=over?"本月已超支,先踩煞車":todayCan<baseline*0.92?"最近花得比較兇,今天收斂一點":todayCan>baseline*1.08?"你超前進度了,可以鬆一口氣":"原本每天約 "+nt(baseline)+",目前剛好";
+ var msg=over?"這個週期已超支,先踩煞車":todayCan<baseline*0.92?"最近花得比較兇,今天收斂一點":todayCan>baseline*1.08?"你超前進度了,可以鬆一口氣":"原本每天約 "+nt(baseline)+",目前剛好";
  var banner="";
- if(inst>0) banner=bannerHTML(C.gold,"這個月揹分期 "+nt(inst)+",日常壓到約 "+nt(pool)+"(一天約 "+nt(baseline)+")。");
- else if(nextInst>0) banner=bannerHTML(C.jade,"這個月是常態、額度較鬆(一天約 "+nt(baseline)+")。下個月起分期會壓上來,先別太放鬆。");
+ if(inst>0) banner=bannerHTML(C.gold,"這個週期揹分期 "+nt(inst)+",日常壓到約 "+nt(pool)+"(一天約 "+nt(baseline)+")。");
+ else if(nextInst>0) banner=bannerHTML(C.jade,"這個週期是常態、額度較鬆(一天約 "+nt(baseline)+")。下個週期起分期會壓上來,先別太放鬆。");
  var quick=Object.keys(CATS).map(function(k){return '<button class="qbtn press" data-act="add" data-cat="'+k+'">'+ic(ICON[k],CATS[k].color,22)+'<span style="font-size:12px;font-weight:600">'+CATS[k].label+'</span></button>';}).join("");
  var list="";
  if(monthExp.length){
-   list='<div class="lbl">本月記錄('+monthExp.length+')</div><div class="card" style="overflow:hidden">'+
+   list='<div class="lbl">這個週期的記錄('+monthExp.length+')</div><div class="card" style="overflow:hidden">'+
      monthExp.slice(0,8).map(function(e){return rowHTML(e,true);}).join("")+
      (monthExp.length>8?'<div style="padding:10px;text-align:center;font-size:12px;color:'+C.faint+'">⋯ 其餘 '+(monthExp.length-8)+' 筆請看月曆頁</div>':'')+'</div>';
  }
@@ -179,12 +211,12 @@ function todayHTML(){
   '<div style="display:flex;justify-content:space-between;align-items:flex-start">'+headerHTML("看得到的,才花得安心")+
     '<button class="press" data-act="setup" style="padding:4px 2px">'+ic(ICON.gear,C.muted,20)+'</button></div>'+
   '<div class="hero" style="background:'+hero+'">'+
-    '<div style="font-size:13px;opacity:.8">本月還能花</div>'+
+    '<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:13px;opacity:.8">還能花</span><span style="font-size:12px;opacity:.75">'+cycleLabel(cyc)+'</span></div>'+
     '<div class="big tnum">'+nt(remain)+'</div>'+
     '<div style="display:flex;align-items:baseline;gap:8px;margin-top:10px"><span class="tnum" style="font-size:22px;font-weight:700">'+nt(todayCan)+'</span><span style="font-size:12px;opacity:.85">今天可花 · 剩 '+daysLeft+' 天</span></div>'+
     '<div style="font-size:12px;margin-top:6px;opacity:.9">'+msg+'</div>'+
     '<div style="margin-top:14px;height:6px;border-radius:4px;background:rgba(255,255,255,.22);overflow:hidden"><div style="height:100%;width:'+pct+'%;background:rgba(255,255,255,.9);border-radius:4px"></div></div>'+
-    '<div style="display:flex;justify-content:space-between;font-size:11px;opacity:.8;margin-top:6px"><span>已花 '+nt(spent)+'</span><span>本月額度 '+nt(pool)+'</span></div>'+
+    '<div style="display:flex;justify-content:space-between;font-size:11px;opacity:.8;margin-top:6px"><span>已花 '+nt(spent)+'</span><span>週期額度 '+nt(pool)+'</span></div>'+
   '</div>'+banner+
   '<button class="press" data-act="play" style="width:100%;margin-top:10px;text-align:left;background:'+C.surface+';border:1px solid '+C.line+';border-radius:16px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between">'+
     '<div><div style="font-size:14px;font-weight:600">這個月有安排國內旅遊</div><div style="font-size:12px;color:'+C.muted+';margin-top:2px">'+(db.play?(tripLogged?"已記錄,預留解除":"已預留 "+nt(s.domesticReserve)):"沒有的話額度全拿來吃")+'</div></div>'+
@@ -194,48 +226,64 @@ function todayHTML(){
   '<div class="foot">一週打開一次、記大筆的就好,不用逐筆。</div></div>';
 }
 function bannerHTML(color,text){return '<div style="background:#F3EEE2;border:1px solid '+C.line+';border-radius:14px;padding:10px 12px;margin-top:10px;font-size:12px;color:'+color+';display:flex;gap:8px">'+ic(ICON.warn,color,16)+'<span>'+esc(text)+'</span></div>';}
-function rowHTML(e,del){var c=CATS[e.cat];
+/* editable=true 時整列可點開編輯,右邊給刪除鈕 */
+function rowHTML(e,editable){var c=CATS[e.cat];
  var tag=e.pay==="card"?'<span style="font-size:11px;color:'+cardColor(e.card)+';margin-left:6px">'+esc(e.card||"")+'</span>':e.pay==="cash"?'<span style="font-size:11px;color:'+C.faint+';margin-left:6px">現金</span>':'';
- return '<div class="row">'+ic(ICON[e.cat],c.color,18)+
+ return '<div class="row'+(editable?' press" data-act="edit" data-id="'+e.id+'"':'"')+'>'+ic(ICON[e.cat],c.color,18)+
   '<div style="flex:1"><div style="font-size:14px;font-weight:600">'+c.label+(e.note?" · "+esc(e.note):"")+tag+'</div><div style="font-size:11px;color:'+C.faint+'">'+esc(e.date.slice(5))+'</div></div>'+
   '<div class="tnum" style="font-size:15px;font-weight:700">'+nt(e.amount)+'</div>'+
-  (del?'<button class="press" data-act="del" data-id="'+e.id+'" style="padding:4px">'+ic(ICON.trash,C.faint,16)+'</button>':'')+'</div>';
+  (editable?'<button class="press" data-act="del" data-id="'+e.id+'" style="padding:6px 4px">'+ic(ICON.trash,C.faint,16)+'</button>':'')+'</div>';
 }
 
 /* ---------- CALENDAR ---------- */
 function calHTML(){
- var ymStr=ui.calYm||nowYM(); var p=ymStr.split("-"),y=+p[0],m=+p[1];
- var first=new Date(y,m-1,1).getDay(), dim=new Date(y,m,0).getDate();
- var byDay={},monthTotal=0;
- db.expenses.filter(function(e){return e.date.slice(0,7)===ymStr;}).forEach(function(e){var d=e.date.slice(8,10);byDay[d]=(byDay[d]||0)+e.amount;monthTotal+=e.amount;});
- var today=new Date(), isCurMonth=(ymStr===nowYM());
+ var cyc=ui.calCyc||curCycle(), r=cycleRange(cyc), s=cycleStartDay();
+ var byDate={}, cycTotal=0;
+ cycleExpenses(cyc).forEach(function(e){byDate[e.date]=(byDate[e.date]||0)+e.amount;cycTotal+=e.amount;});
+ var todayStr=dstr(new Date());
+
+ /* 週期可能跨兩個日曆月(例:8/25–9/24),所以格子是從週期第一天連續排到最後一天 */
+ var days=[];
+ for(var d=new Date(r.start);d<=r.end;d.setDate(d.getDate()+1))days.push(new Date(d));
  var cells="";
- for(var i=0;i<first;i++)cells+='<div></div>';
- for(var d=1;d<=dim;d++){var key=String(d).padStart(2,"0");var amt=byDay[key]||0;
-   var isToday=isCurMonth&&d===today.getDate();var on=ui.calSel===d;
+ for(var i=0;i<days.length;i++){
+   if(i===0)for(var b=0;b<days[0].getDay();b++)cells+='<div></div>';
+   var dt=days[i], key=dstr(dt), amt=byDate[key]||0;
+   var isToday=key===todayStr, on=ui.calSel===key, firstOfMonth=dt.getDate()===1;
    var bg=on?C.ink:amt>0?"#EAE7DC":"transparent";
-   cells+='<button class="press" data-act="calDay" data-d="'+d+'" style="aspect-ratio:1;border-radius:10px;border:'+(isToday?"1.5px solid "+C.ink:"1px solid transparent")+';background:'+bg+';display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:0">'+
-     '<span style="font-size:13px;font-weight:'+(isToday?700:500)+';color:'+(on?"#fff":C.text)+'">'+d+'</span>'+
+   cells+='<button class="press" data-act="calDay" data-d="'+key+'" style="aspect-ratio:1;border-radius:10px;border:'+(isToday?"1.5px solid "+C.ink:"1px solid transparent")+';background:'+bg+';display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:0">'+
+     '<span style="font-size:'+(firstOfMonth?11:13)+'px;font-weight:'+(isToday||firstOfMonth?700:500)+';color:'+(on?"#fff":firstOfMonth?C.jade:C.text)+'">'+(firstOfMonth?(dt.getMonth()+1)+"/1":dt.getDate())+'</span>'+
      (amt>0?'<span class="tnum" style="font-size:9px;color:'+(on?"#cfe0d8":C.gold)+'">'+(amt>=1000?Math.round(amt/1000)+"k":amt)+'</span>':'')+'</button>';
  }
+
  var weeks=[],wk=null;
- for(var dd=1;dd<=dim;dd++){var dow=new Date(y,m-1,dd).getDay();if(dow===0||dd===1){if(wk)weeks.push(wk);wk={start:dd,end:dd,total:0};}wk.end=dd;wk.total+=(byDay[String(dd).padStart(2,"0")]||0);}
+ days.forEach(function(dt,i){
+   if(dt.getDay()===0||i===0){if(wk)weeks.push(wk);wk={start:dt,end:dt,total:0};}
+   wk.end=dt;wk.total+=(byDate[dstr(dt)]||0);
+ });
  if(wk)weeks.push(wk);
- var weeksHTML=weeks.map(function(w,i){return '<div class="row"><div><div style="font-size:14px;font-weight:600">第 '+(i+1)+' 週</div><div style="font-size:11px;color:'+C.faint+'">'+m+'/'+w.start+' – '+m+'/'+w.end+'</div></div><div class="tnum" style="font-size:16px;font-weight:700;color:'+(w.total>0?C.text:C.faint)+'">'+nt(w.total)+'</div></div>';}).join("");
+ var md=function(dt){return (dt.getMonth()+1)+"/"+dt.getDate();};
+ var weeksHTML=weeks.map(function(w,i){return '<div class="row"><div style="flex:1"><div style="font-size:14px;font-weight:600">第 '+(i+1)+' 週</div><div style="font-size:11px;color:'+C.faint+'">'+md(w.start)+' – '+md(w.end)+'</div></div><div class="tnum" style="font-size:16px;font-weight:700;color:'+(w.total>0?C.text:C.faint)+'">'+nt(w.total)+'</div></div>';}).join("");
+
  var selHTML="";
- if(ui.calSel!=null){var sk=String(ui.calSel).padStart(2,"0");var sl=db.expenses.filter(function(e){return e.date===ymStr+"-"+sk;});
-   selHTML='<div class="card" style="'+(sl.length?"":"padding:16px;")+'margin-top:10px;overflow:hidden">'+(sl.length?sl.map(function(e){return rowHTML(e,false);}).join(""):'<div style="font-size:13px;color:'+C.muted+';text-align:center">'+m+'/'+ui.calSel+' 沒有記錄</div>')+'</div>';}
- return '<div class="fadein">'+headerHTML("整個月一眼看完 · 哪天花了、哪天空白")+
+ if(ui.calSel){
+   var sl=db.expenses.filter(function(e){return e.date===ui.calSel;});
+   var selDate=ui.calSel.slice(5).replace("-","/");
+   selHTML='<div class="lbl">'+selDate+' 的明細'+(sl.length?'(點一筆可編輯)':'')+'</div>'+
+     '<div class="card" style="'+(sl.length?"":"padding:16px;")+'overflow:hidden">'+
+     (sl.length?sl.map(function(e){return rowHTML(e,true);}).join(""):'<div style="font-size:13px;color:'+C.muted+';text-align:center">這天沒有記錄</div>')+'</div>';
+ }
+ return '<div class="fadein">'+headerHTML(s>1?"以薪水週期為一個月 · 不是日曆月":"整個月一眼看完 · 哪天花了、哪天空白")+
   '<div class="card" style="padding:16px">'+
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">'+
       '<button class="press" data-act="calShift" data-n="-1" style="color:'+C.muted+';font-size:20px;padding:2px 10px">‹</button>'+
-      '<div style="text-align:center"><div style="font-size:16px;font-weight:700">'+y+' 年 '+m+' 月</div><div style="font-size:12px;color:'+C.gold+';margin-top:2px">本月已花 '+nt(monthTotal)+'</div></div>'+
+      '<div style="text-align:center"><div style="font-size:16px;font-weight:700">'+cycleLabel(cyc)+'</div><div style="font-size:12px;color:'+C.gold+';margin-top:2px">這個週期已花 '+nt(cycTotal)+'</div></div>'+
       '<button class="press" data-act="calShift" data-n="1" style="color:'+C.muted+';font-size:20px;padding:2px 10px">›</button></div>'+
     '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;font-size:11px;color:'+C.faint+';margin-bottom:6px"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>'+
     '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px">'+cells+'</div>'+
   '</div>'+selHTML+
   '<div class="lbl">每週小計(補記在哪天都算對)</div><div class="card" style="overflow:hidden">'+weeksHTML+'</div>'+
-  '<div class="foot">點日期看當天明細。哪天補記,都會算進那天所屬的那一週。</div></div>';
+  '<div class="foot">點日期看當天明細,點明細可以改,右邊垃圾桶可以刪。</div></div>';
 }
 
 /* ---------- ASSETS ---------- */
@@ -322,7 +370,8 @@ function flowHTML(){
      return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:'+(i===0?"none":"1px dashed "+C.line)+'"><span style="width:8px;height:8px;border-radius:2px;flex-shrink:0;background:'+col+'"></span><span style="flex:1;font-size:13px">'+esc(e.t)+'</span><span style="font-size:11px;color:'+C.faint+'">'+esc(e.c)+'</span><span class="tnum" style="font-size:14px;font-weight:700;min-width:62px;text-align:right;color:'+acol+'">'+amt+'</span></div>';}).join("")
      :'<div style="font-size:12px;color:'+C.faint+';padding:4px 0">這個月沒有分期或大筆規劃</div>';
    return '<div style="background:'+(mo.danger?"#F6ECE6":C.surface)+';border:1px solid '+(mo.danger?"#E3C3B2":C.line)+';border-radius:18px;padding:16px;margin-bottom:10px">'+
-     '<div style="display:flex;align-items:center;justify-content:space-between"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:17px;font-weight:700">'+mo.m+'</span>'+
+     '<div style="display:flex;align-items:center;justify-content:space-between"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:17px;font-weight:700">'+mo.m+'</span>'+
+       (mo.range?'<span style="font-size:11px;color:'+C.faint+'">'+esc(mo.range)+'</span>':'')+
        (mo.danger?'<span style="font-size:11px;color:'+C.clay+';background:#F0D8CC;border-radius:20px;padding:2px 8px;font-weight:600">⚠ 最危險</span>':'')+
        (mo.good?'<span style="font-size:11px;color:'+C.jade+';background:#DDEBE4;border-radius:20px;padding:2px 8px;font-weight:600">寬鬆</span>':'')+'</div>'+
        '<div style="text-align:right"><div style="font-size:11px;color:'+C.faint+'">日常可花</div><div class="tnum" style="font-size:16px;font-weight:700;color:'+(mo.danger?C.clay:C.ink)+'">'+nt(mo.daily)+'</div></div></div>'+
@@ -335,14 +384,14 @@ function flowHTML(){
  var planOut=db.plans.reduce(function(a,p){return a+(p.amount>0?p.amount:0);},0);
  var planIn=db.plans.reduce(function(a,p){return a+(p.amount<0?-p.amount:0);},0);
  var instLeft=0;
- db.installments.forEach(function(it){var ms=instMonths(it),cur=nowYM();ms.forEach(function(m){if(m>=cur)instLeft+=it.amt;});});
+ db.installments.forEach(function(it){var ms=instMonths(it),cur=curCycle();ms.forEach(function(m){if(m>=cur)instLeft+=it.amt;});});
  var summary='<div style="background:'+C.ink+';border-radius:18px;padding:16px;color:#fff">'+
    '<div style="font-size:14px;font-weight:700;margin-bottom:10px">未來 8 個月 · 全景</div>'+
    '<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0"><span style="opacity:.88">常態日常額度(未扣分期)</span><span style="font-weight:600">'+nt(base)+'</span></div>'+
    '<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0"><span style="opacity:.88">分期還要繳</span><span style="font-weight:600">'+nt(instLeft)+'</span></div>'+
    '<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0"><span style="opacity:.88">已規劃的大筆支出</span><span style="font-weight:600">'+nt(planOut)+'</span></div>'+
    (planIn>0?'<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0"><span style="opacity:.88">已規劃的進帳</span><span style="font-weight:600;color:#9FE0C4">+'+nt(planIn)+'</span></div>':'')+
-   '<div style="border-top:1px solid rgba(255,255,255,.18);margin-top:8px;padding-top:8px;font-size:12px;opacity:.9;line-height:1.5">以「當前真實月份」為起點自動推算。改分期或行程,這頁會跟著變。</div></div>';
+   '<div style="border-top:1px solid rgba(255,255,255,.18);margin-top:8px;padding-top:8px;font-size:12px;opacity:.9;line-height:1.5">以「當前'+(cycleStartDay()>1?"薪水週期":"月份")+'」為起點自動推算。改分期或行程,這頁會跟著變。</div></div>';
  return '<div class="fadein">'+
   '<div style="display:flex;justify-content:space-between;align-items:flex-start">'+headerHTML("錢什麼時候真的離開戶頭")+
     '<button class="press" data-act="setup" style="padding:4px 2px">'+ic(ICON.gear,C.muted,20)+'</button></div>'+
@@ -400,14 +449,20 @@ function addSheetHTML(){
    }
    noteRow='<input id="note" class="in" placeholder="備註(可留空)" value="'+esc(f.note||"")+'" style="margin-bottom:14px"/>';
  }
- return sheetHead(isCash?"領現金":"記一筆 · "+c.label)+
+ var editing=!!f.id;
+ var catRow=editing?'<div style="font-size:12px;color:'+C.muted+';margin-bottom:6px">分類</div><div style="display:flex;gap:6px;margin-bottom:14px">'+
+   Object.keys(CATS).map(function(k){var on=f.cat===k;return '<button class="press" data-act="setcat" data-v="'+k+'" style="flex:1;border-radius:12px;padding:9px 0;font-size:13px;font-weight:600;background:'+(on?CATS[k].color:"#fff")+';color:'+(on?"#fff":C.text)+';border:1px solid '+(on?CATS[k].color:C.line)+'">'+CATS[k].label+'</button>';}).join("")+'</div>':'';
+ return sheetHead(editing?"編輯這一筆":(isCash?"領現金":"記一筆 · "+c.label))+
   '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px"><span class="tnum" style="font-size:34px;font-weight:700;color:'+c.color+'">$</span>'+
    '<input id="amt" inputmode="decimal" placeholder="0" value="'+esc(f.amt||"")+'" class="tnum" style="flex:1;font-size:34px;font-weight:700;border:none;outline:none;background:transparent;color:'+C.text+';width:100%"/></div>'+
   '<div style="display:flex;gap:8px;margin-bottom:14px">'+qb+'</div>'+
+  catRow+
   '<div style="font-size:12px;color:'+C.muted+';margin-bottom:6px">日期(補記可改)</div>'+
-  '<input id="date" type="date" class="in" value="'+f.date+'" style="margin-bottom:14px"/>'+
+  '<input id="date" type="date" class="in" value="'+f.date+'" style="margin-bottom:6px"/>'+
+  '<div style="font-size:11px;color:'+C.faint+';margin-bottom:14px">這天屬於 '+cycleLabel(cycleOfStr(f.date))+'</div>'+
   payRow+cardRow+noteRow+
-  '<button class="press btn" data-act="saveAdd" style="background:'+c.color+';color:#fff">'+(isCash?"確認領出(從額度扣)":"記下來")+'</button>';
+  '<button class="press btn" data-act="saveAdd" style="background:'+c.color+';color:#fff">'+(editing?"儲存修改":(isCash?"確認領出(從額度扣)":"記下來"))+'</button>'+
+  (editing?'<button class="press" data-act="del" data-id="'+f.id+'" style="width:100%;margin-top:8px;color:'+C.clay+';font-size:13px;padding:10px 0;font-weight:600">刪除這一筆</button>':'');
 }
 function assetEditHTML(){
  var a=db.assets;
@@ -492,8 +547,19 @@ function setupHTML(){
 
  var addBtn=function(sec,label){return '<button class="press" data-act="addRow" data-sec="'+sec+'" style="width:100%;background:#fff;border:1px dashed '+C.line+';border-radius:12px;padding:11px 0;font-size:14px;font-weight:600;color:'+C.muted+'">+ '+label+'</button>';};
 
+ var cs=Math.round(Number(d.settings.cycleStartDay))||1;
+ var csPreview=cs<=1?"目前用日曆月:每月 1 號 ~ 月底。"
+   :"目前一個「月」= 每月 "+cs+" 號 ~ 隔月 "+(cs-1)+" 號,以結束的那個月命名(例:8/"+cs+"–9/"+(cs-1)+" 算「9 月週期」)。";
+ var cycleSection='<div class="lbl">薪水週期</div>'+
+   '<div style="font-size:12px;color:'+C.muted+';margin-bottom:8px;line-height:1.5">如果你的薪水不是月初入帳(例如 25 號預領次月薪),填入那一天,App 就會照你的薪水節奏算「一個月」,而不是日曆月。填 1 就是一般日曆月。</div>'+
+   '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span style="font-size:13px;color:'+C.muted+'">每月</span>'+
+     '<input data-sk="cycleStartDay" inputmode="numeric" value="'+cs+'" class="tnum" style="'+inp+';width:88px;text-align:center;font-weight:700"/>'+
+     '<span style="font-size:13px;color:'+C.muted+'">號起算(1–28)</span></div>'+
+   '<div style="padding:10px 12px;border-radius:12px;background:#F3EEE2;font-size:12px;color:'+C.gold+';line-height:1.5">'+csPreview+'</div>';
+
  return sheetHead("設定")+
   '<div style="font-size:12px;color:'+C.muted+';line-height:1.6;background:#F3EEE2;border-radius:12px;padding:10px 12px">這裡的每個數字都只存在這台裝置,不會上傳。隨時可以回來改。</div>'+
+  cycleSection+
   '<div class="lbl">每月固定的錢</div>'+setRows+
   '<div style="margin-top:12px;padding:12px;border-radius:12px;background:'+(disp>=0?"#E4EEE9":"#F6ECE6")+';font-size:13px;color:'+(disp>=0?C.jade:C.clay)+';font-weight:600">日常可支配(未扣分期)= '+nt(disp)+' / 月</div>'+
   '<div class="lbl">信用卡</div>'+cardRows+addBtn("cards","新增一張卡")+
@@ -554,12 +620,32 @@ document.addEventListener("click",function(ev){
  if(act==="qamt"){var i=document.getElementById("amt");if(i){i.value=el.getAttribute("data-q");ui.addForm.amt=el.getAttribute("data-q");i.focus();}return;}
  if(act==="setpay"){syncAddForm();ui.addForm.pay=el.getAttribute("data-v");render();return;}
  if(act==="setcard"){syncAddForm();ui.addForm.card=el.getAttribute("data-v");render();return;}
+ if(act==="setcat"){syncAddForm();ui.addForm.cat=el.getAttribute("data-v");render();return;}
+ if(act==="edit"){var eid=+el.getAttribute("data-id");var ex=db.expenses.filter(function(e){return e.id===eid;})[0];if(!ex)return;
+   ui.addForm={id:ex.id,cat:ex.cat,amt:String(ex.amount),note:ex.note||"",pay:ex.pay||"card",card:ex.card||(db.cards.length?db.cards[0].name:null),date:ex.date};
+   ui.sheet={type:"add"};render();return;}
  if(act==="saveAdd"){syncAddForm();var f=ui.addForm;var amt=Math.round(Number(f.amt));if(!amt||amt<=0)return;
-   var isCash=f.cat==="現";var item={id:uid(),date:f.date,cat:f.cat,amount:amt,note:f.note,pay:isCash?"cash":f.pay,card:f.pay==="card"?f.card:null};
-   db.expenses.unshift(item);if(f.cat==="現")db.assets.cash+=amt;persist();ui.sheet=null;render();return;}
- if(act==="del"){var id=+el.getAttribute("data-id");db.expenses=db.expenses.filter(function(e){return e.id!==id;});persist();render();return;}
- if(act==="calShift"){var nym=ui.calYm||nowYM();var pp=nym.split("-"),yy=+pp[0],mm=+pp[1]+(+el.getAttribute("data-n"));if(mm<1){mm=12;yy--;}if(mm>12){mm=1;yy++;}ui.calYm=yy+"-"+String(mm).padStart(2,"0");ui.calSel=null;render();return;}
- if(act==="calDay"){var dd=+el.getAttribute("data-d");ui.calSel=(ui.calSel===dd?null:dd);render();return;}
+   var isCash=f.cat==="現";
+   var item={id:f.id||uid(),date:f.date,cat:f.cat,amount:amt,note:f.note,pay:isCash?"cash":f.pay,card:(!isCash&&f.pay==="card")?f.card:null};
+   if(f.id){ /* 編輯:先把舊記錄對現金桶的影響抵銷,再套用新的 */
+     var i0=-1;db.expenses.forEach(function(e,ix){if(e.id===f.id)i0=ix;});
+     if(i0<0)return;
+     var old=db.expenses[i0];
+     if(old.cat==="現")db.assets.cash-=old.amount;
+     if(isCash)db.assets.cash+=amt;
+     db.expenses[i0]=item;
+   }else{
+     db.expenses.unshift(item);
+     if(isCash)db.assets.cash+=amt;
+   }
+   persist();ui.sheet=null;render();return;}
+ if(act==="del"){var id=+el.getAttribute("data-id");
+   var gone=db.expenses.filter(function(e){return e.id===id;})[0];
+   if(gone&&gone.cat==="現")db.assets.cash=Math.max(0,db.assets.cash-gone.amount); /* 領現金被刪掉,現金桶同步扣回 */
+   db.expenses=db.expenses.filter(function(e){return e.id!==id;});
+   persist();ui.sheet=null;render();return;}
+ if(act==="calShift"){ui.calCyc=shiftCycle(ui.calCyc||curCycle(),+el.getAttribute("data-n"));ui.calSel=null;render();return;}
+ if(act==="calDay"){var dd=el.getAttribute("data-d");ui.calSel=(ui.calSel===dd?null:dd);render();return;}
  if(act==="lock"){ui.unlocked=false;ui.tab="today";render();return;}
  if(act==="chk"){ui.checks=ui.checks||{};var k=el.getAttribute("data-k");ui.checks[k]=!ui.checks[k];render();return;}
  if(act==="assetEdit"){ui.sheet={type:"assetEdit"};render();return;}
@@ -571,7 +657,7 @@ document.addEventListener("click",function(ev){
    else{if(pw===localStorage.getItem(PWKEY)){ui.unlocked=true;ui.sheet=null;ui.tab="assets";render();}else{errEl.textContent="密碼不對";}}
    return;}
  if(act==="setup"){ui.setupDraft={settings:Object.assign({},db.settings),cards:JSON.parse(JSON.stringify(db.cards)),installments:JSON.parse(JSON.stringify(db.installments)),plans:JSON.parse(JSON.stringify(db.plans))};ui.sheet={type:"setup"};render();return;}
- if(act==="addRow"){syncSetup();var sec=el.getAttribute("data-sec"),d=ui.setupDraft,cur=nowYM();
+ if(act==="addRow"){syncSetup();var sec=el.getAttribute("data-sec"),d=ui.setupDraft,cur=curCycle();
    if(sec==="cards")d.cards.push({id:uid(),name:"新卡片",color:CARD_COLORS[d.cards.length%CARD_COLORS.length],closeDay:1,payDay:15});
    else if(sec==="installments")d.installments.push({id:uid(),name:"新分期",amt:0,startYM:cur,count:6,card:d.cards.length?d.cards[0].name:""});
    else d.plans.push({id:uid(),ym:cur,name:"新項目",amount:0,card:""});
@@ -580,7 +666,10 @@ document.addEventListener("click",function(ev){
  if(act==="saveSetup"){syncSetup();var sd=ui.setupDraft;
    sd.cards.forEach(function(c,i){if(!c.color)c.color=CARD_COLORS[i%CARD_COLORS.length];});
    db.settings=Object.assign({},db.settings,sd.settings);
+   var csd=Math.round(Number(db.settings.cycleStartDay))||1;
+   db.settings.cycleStartDay=csd<1?1:(csd>28?28:csd); /* 29–31 號有些月份不存在,夾到 28 */
    db.settings.configured=db.settings.income>0;
+   ui.calCyc=curCycle();ui.calSel=null;
    db.cards=sd.cards;db.installments=sd.installments;db.plans=sd.plans;
    persist();ui.sheet=null;render();return;}
  if(act==="goalEdit"){ui.goalDraft=JSON.parse(JSON.stringify(db.goals||[]));ui.sheet={type:"goalEdit"};render();return;}
@@ -594,7 +683,7 @@ document.addEventListener("click",function(ev){
 /* ---------- init ---------- */
 try{
   db=load();
-  ui={tab:"today",sheet:null,unlocked:false,calYm:nowYM(),calSel:null,checks:{},addForm:null,goalDraft:null,noStore:false};
+  ui={tab:"today",sheet:null,unlocked:false,calCyc:curCycle(),calSel:null,checks:{},addForm:null,goalDraft:null,setupDraft:null,noStore:false};
   try{localStorage.setItem("__t","1");localStorage.removeItem("__t");}catch(e){ui.noStore=true;}
   render();
 }catch(err){
