@@ -66,6 +66,7 @@ var DEFAULTS={
  cards:[],        /* {id,name,color,closeDay,payDay} */
  installments:[], /* {id,name,amt,startYM,count,card} */
  plans:[],        /* {id,ym,name,amount,card} amount 為負代表進帳 */
+ dividends:[],    /* {id,name,ym,amount,yearly} 股息:入帳的那個月 */
  goals:[{id:uid(),name:"存到 100 萬",target:1000000,tasks:[
    {id:uid(),name:"第一桶 50 萬",target:500000},
    {id:uid(),name:"衝到 70 萬",target:700000},
@@ -80,6 +81,23 @@ function instMonths(it){var out=[],ym=it.startYM;for(var i=0;i<it.count;i++){out
 function activeInstall(ym){return (db.installments||[]).reduce(function(s,it){return s+(instMonths(it).indexOf(ym)>=0?it.amt:0);},0);}
 function cardColor(name){var c=(db.cards||[]).filter(function(x){return x.name===name;})[0];return c?c.color:C.faint;}
 function disposableMonthly(){var s=db.settings;return s.income-s.rent-s.filial-s.savingsFixed-s.invest-s.travelFundMonthly;}
+
+/* 股息:標的是「入帳月份」。勾了每年重複,就每年同一個月再來一次 */
+function dividendsIn(ym){
+ var mm=ym.split("-")[1];
+ return (db.dividends||[]).filter(function(d){
+   if(!d.ym)return false;
+   return d.yearly?(d.ym.split("-")[1]===mm&&ym>=d.ym):d.ym===ym;
+ });
+}
+function nextDividends(n){
+ var ym=curCycle(), out=[];
+ for(var i=0;i<n;i++){
+   dividendsIn(ym).forEach(function(d){out.push({ym:ym,name:d.name,amount:d.amount,yearly:d.yearly});});
+   ym=nextMonth(ym);
+ }
+ return out;
+}
 
 var CATS={"食":{label:"吃飯",color:C.ink},"雜":{label:"雜支",color:C.inkSoft},"遊":{label:"國內旅遊",color:C.gold},"現":{label:"領現金",color:C.jade}};
 var ICON={
@@ -114,6 +132,9 @@ function buildTimeline(){
     if(p.amount<0)income+=-p.amount;
     events.push({t:p.name,a:p.amount,c:p.card||"—"});
   });
+  var divSum=0;
+  dividendsIn(ym).forEach(function(d){divSum+=d.amount;events.push({t:d.name+" 股息",a:-d.amount,c:"股息"});});
+  income+=divSum;
   if(fund<0)fund=0;
   var daily=base-instSum;
   out.push({ym:ym,m:ymLabel(ym),range:cycleStartDay()>1?cycleLabel(ym).replace(/^\d+ 月週期/,"").replace(/[()]/g,""):"",daily:daily,fund:fund,events:events,
@@ -132,7 +153,7 @@ function normalize(d){
  var m=Object.assign({},DEFAULTS,d);
  m.settings=Object.assign({},DEFAULTS.settings,d.settings||{});
  m.assets=Object.assign({},DEFAULTS.assets,d.assets||{});
- ["expenses","cards","installments","plans","goals"].forEach(function(k){if(!Array.isArray(m[k]))m[k]=JSON.parse(JSON.stringify(DEFAULTS[k]));});
+ ["expenses","cards","installments","plans","dividends","goals"].forEach(function(k){if(!Array.isArray(m[k]))m[k]=JSON.parse(JSON.stringify(DEFAULTS[k]));});
  return m;
 }
 function load(){try{
@@ -301,6 +322,38 @@ function calHTML(){
   '<div class="foot">點日期看當天明細,點明細可以改,右邊垃圾桶可以刪。</div></div>';
 }
 
+/* ---------- 股息行事曆 ---------- */
+function divCardHTML(stockCost){
+ var list=nextDividends(12);
+ var total=list.reduce(function(a,d){return a+d.amount;},0);
+ var head='<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:'+(list.length?"12px":"0")+'">'+
+   '<div style="font-size:14px;font-weight:700">股息行事曆 · 未來 12 個月</div>'+
+   '<button class="press" data-act="setup" style="font-size:12px;color:'+C.jade+';font-weight:600;padding:2px 0">編輯</button></div>';
+ if(!list.length){
+   return '<div class="card" style="padding:16px;margin-top:12px">'+head+
+     '<div style="font-size:13px;color:'+C.muted+';line-height:1.6;margin-top:8px">還沒登記股息。到設定裡把每檔股票的<b>入帳月份</b>和<b>金額</b>填進來,這裡就會列出未來一年什麼時候有錢進來,時間軸也會一起算。</div></div>';
+ }
+ var byYm={};
+ list.forEach(function(d){(byYm[d.ym]=byYm[d.ym]||[]).push(d);});
+ var rows=Object.keys(byYm).sort().map(function(ym,i){
+   var items=byYm[ym], sum=items.reduce(function(a,d){return a+d.amount;},0);
+   return '<div style="padding:10px 0;border-top:'+(i===0?"none":"1px solid "+C.line)+'">'+
+     '<div style="display:flex;justify-content:space-between;align-items:baseline">'+
+       '<span style="font-size:14px;font-weight:700">'+(+ym.split("-")[1])+' 月</span>'+
+       '<span class="tnum" style="font-size:16px;font-weight:700;color:'+C.jade+'">+'+nt(sum)+'</span></div>'+
+     items.map(function(d){return '<div style="display:flex;justify-content:space-between;font-size:12px;color:'+C.muted+';margin-top:3px"><span>'+esc(d.name)+(d.yearly?' <span style="color:'+C.faint+'">每年</span>':'')+'</span><span class="tnum">'+nt(d.amount)+'</span></div>';}).join("")+
+     '</div>';
+ }).join("");
+ var yieldPct=stockCost>0?(total/stockCost*100):null;
+ return '<div class="card" style="padding:16px;margin-top:12px">'+head+
+   '<div style="background:#E4EEE9;border-radius:12px;padding:12px 14px;margin-bottom:6px">'+
+     '<div style="font-size:12px;color:'+C.jade+'">未來 12 個月預計領到</div>'+
+     '<div class="tnum" style="font-size:28px;font-weight:700;color:'+C.jade+';letter-spacing:-.02em">'+nt(total)+'</div>'+
+     (yieldPct!==null?'<div style="font-size:12px;color:'+C.muted+';margin-top:2px">以投入成本 '+nt(stockCost)+' 計,現金殖利率約 '+yieldPct.toFixed(1)+'%</div>':'')+
+     '<div style="font-size:12px;color:'+C.muted+';margin-top:2px">平均一個月多 '+nt(total/12)+'</div></div>'+
+   rows+'</div>';
+}
+
 /* ---------- ASSETS ---------- */
 function assetsHTML(){
  var a=db.assets;
@@ -308,11 +361,6 @@ function assetsHTML(){
  var total=a.savingsAccum+a.stockValue+a.travelFund+a.cash;
  var pnl=a.stockValue-a.stockCost;
  var mp=db.settings.savingsFixed+db.settings.invest;
- var pts=[];for(var i=0;i<13;i++)pts.push(principal+i*mp);
- var goal=db.goals&&db.goals[0];
- var msLine=Math.ceil((total+1)/100000)*100000;
- if(goal){var nx=goal.tasks.filter(function(t){return total<t.target;})[0];msLine=nx?nx.target:goal.target;}
- var monthsToMs=mp>0?Math.max(0,Math.ceil((msLine-principal)/mp)):null;
  var buckets=[{l:"存錢累積",v:a.savingsAccum,c:C.ink},{l:"股票",v:a.stockValue,c:C.blue},{l:"出國基金",v:a.travelFund,c:C.gold},{l:"現金",v:a.cash,c:C.jade}];
  var ch=ui.checks||{};
  var all=ch.save&&ch.invest&&ch.fund;
@@ -323,19 +371,15 @@ function assetsHTML(){
    return '<button class="press" data-act="chk" data-k="'+x[0]+'" style="width:100%;display:flex;align-items:center;gap:12px;padding:12px 10px;text-align:left">'+
      '<div style="width:24px;height:24px;border-radius:8px;flex-shrink:0;background:'+(on?C.jade:"#fff")+';border:1.5px solid '+(on?C.jade:C.line)+';display:flex;align-items:center;justify-content:center">'+(on?ic(ICON.check,"#fff",16):"")+'</div>'+
      '<span style="font-size:14px;color:'+(on?C.faint:C.text)+';text-decoration:'+(on?"line-through":"none")+'">'+x[1]+'</span></button>';}).join("");
- var goalsHTML=(db.goals||[]).map(goalCardHTML.bind(null,total)).join("");
+ var goalsHTML=(db.goals||[]).map(goalCardHTML.bind(null,total,mp)).join("");
  return '<div class="fadein">'+
   '<div style="display:flex;justify-content:space-between;align-items:flex-start">'+headerHTML("別只看花掉多少,看你存了多少")+'<button class="press" data-act="lock" style="color:'+C.muted+';font-size:12px;padding:6px">🔒 鎖上</button></div>'+
   (a.example?'<div style="background:#F3EEE2;border:1px solid '+C.line+';border-radius:12px;padding:8px 12px;font-size:12px;color:'+C.gold+';margin-bottom:12px">資產數字還沒填。點下方「校正起點」輸入你的股票、存款現值,曲線才會準。</div>':'')+
   '<div class="hero" style="background:'+C.ink+'"><div style="font-size:13px;opacity:.8">總資產</div><div class="tnum" style="font-size:44px;font-weight:700;letter-spacing:-.03em">'+nt(total)+'</div>'+
     '<div style="display:flex;gap:14px;margin-top:8px;font-size:12px"><span style="opacity:.85">本金投入 '+nt(principal)+'</span><span style="color:'+(pnl>=0?"#9FE0C4":"#F0B49A")+'">股票'+(pnl>=0?"未實現獲利 +":"帳面回落 ")+nt(pnl)+'</span></div>'+
-    '<div style="margin-top:10px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.14);border-radius:20px;padding:4px 10px;font-size:12px">✨ 每個月本金自動 +'+nt(mp)+'</div></div>'+
-  '<div class="card" style="padding:16px;margin-top:12px"><div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:14px;font-weight:700">本金累積 · 未來 12 個月</div><div style="font-size:12px;color:'+C.jade+';font-weight:600">只會往上 ↗</div></div>'+
-    curveSVG(pts,msLine)+
-    '<div style="font-size:13px;margin-top:8px;line-height:1.5">'+(monthsToMs===null
-      ?'還沒設定每月定存/定期定額,先去設定填一下,這條線才會往上長。'
-      :'照這個速度,約 <b style="color:'+C.gold+'">'+monthsToMs+' 個月</b>後達到 <b>'+nt(msLine)+'</b>。一年後光本金就會多 <b>'+nt(mp*12)+'</b>。')+'</div></div>'+
-  '<div class="lbl">目標 Goal</div>'+goalsHTML+
+    '<div style="margin-top:10px;display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.14);border-radius:20px;padding:4px 10px;font-size:12px">✨ 每個月本金自動 +'+nt(mp)+(mp>0?' · 一年 +'+nt(mp*12):"")+'</div></div>'+
+  divCardHTML(a.stockCost)+
+  '<div class="lbl">目標 Goal · 含預估達成時間</div>'+goalsHTML+
   '<button class="press" data-act="goalEdit" style="width:100%;margin-top:2px;background:#fff;color:'+C.text+';border:1px solid '+C.line+';border-radius:14px;padding:12px 0;font-size:14px;font-weight:600">編輯目標與任務</button>'+
   '<div class="lbl">各桶佔比</div><div class="card" style="padding:16px"><div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-bottom:14px">'+barSeg+'</div>'+bkRows+'</div>'+
   '<div class="lbl">本月固定存錢 · 打勾確認真的有做</div><div class="card" style="padding:8px">'+checkRows+
@@ -344,32 +388,30 @@ function assetsHTML(){
   '<button class="press" data-act="pwReset" style="width:100%;margin-top:8px;color:'+C.faint+';font-size:12px;padding:8px 0">忘記密碼?清空資產資料重設</button>'+
   '<div class="foot">資產一個月看一次就好,股票市值月底更新,或問 Claude 幫你查。</div></div>';
 }
-function goalCardHTML(total,g){
+/* 每月固定投入 mp,推算還要幾個月才會到 target */
+function etaMonths(need,mp){return mp>0?Math.max(0,Math.ceil(need/mp)):null;}
+function etaText(need,mp){
+ var m=etaMonths(need,mp);
+ if(m===null)return "先設定每月定存/定期定額";
+ if(m===0)return "就快到了";
+ var d=new Date();d.setDate(1);d.setMonth(d.getMonth()+m);
+ return d.getFullYear()+"/"+pad2(d.getMonth()+1)+" · 約 "+m+" 個月";
+}
+function goalCardHTML(total,mp,g){
  var pct=g.target>0?Math.min(100,total/g.target*100):0;
  var nx=g.tasks.filter(function(t){return total<t.target;})[0];
  var tasks=g.tasks.map(function(t){var done=total>=t.target;var isNext=nx&&t.id===nx.id;
-   return '<div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:'+(isNext?"6px 8px":"2px 8px")+';border-radius:8px;background:'+(isNext?"#EAE7DC":"transparent")+'">'+
+   return '<div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:'+(isNext?"7px 8px":"3px 8px")+';border-radius:8px;background:'+(isNext?"#EAE7DC":"transparent")+'">'+
      '<span style="width:18px;height:18px;border-radius:6px;flex-shrink:0;background:'+(done?C.jade:"#fff")+';border:1.5px solid '+(done?C.jade:C.line)+';display:flex;align-items:center;justify-content:center">'+(done?ic(ICON.check,"#fff",12):"")+'</span>'+
-     '<span style="flex:1;color:'+(done?C.faint:C.text)+';text-decoration:'+(done?"line-through":"none")+'">'+esc(t.name)+'</span>'+
-     '<span class="tnum" style="font-size:12px;color:'+C.faint+'">'+nt(t.target)+'</span></div>';}).join("");
+     '<div style="flex:1;min-width:0"><div style="color:'+(done?C.faint:C.text)+';text-decoration:'+(done?"line-through":"none")+'">'+esc(t.name)+'</div>'+
+       (done?'':'<div style="font-size:11px;color:'+C.gold+';margin-top:1px">'+etaText(t.target-total,mp)+'</div>')+'</div>'+
+     '<span class="tnum" style="font-size:12px;color:'+C.faint+';flex-shrink:0">'+nt(t.target)+'</span></div>';}).join("");
  return '<div class="card" style="padding:16px;margin-bottom:10px"><div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:15px;font-weight:700">'+esc(g.name)+'</div><div class="tnum" style="font-size:13px;color:'+C.gold+';font-weight:700">'+Math.round(pct)+'%</div></div>'+
   '<div style="margin-top:10px;height:8px;border-radius:4px;background:'+C.lockbg+';overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+C.gold+';border-radius:4px"></div></div>'+
-  '<div style="font-size:12px;color:'+C.muted+';margin-top:6px">'+(nx?"下一關:"+esc(nx.name)+" · 還差 "+nt(nx.target-total):"全部達成,太強了 🎉")+'</div>'+
-  '<div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">'+tasks+'</div></div>';
+  '<div style="font-size:12px;color:'+C.muted+';margin-top:6px">'+(nx?"下一關:"+esc(nx.name)+" · 還差 "+nt(nx.target-total)+" · 預計 "+etaText(nx.target-total,mp):"全部達成,太強了 🎉")+'</div>'+
+  '<div style="margin-top:10px;display:flex;flex-direction:column;gap:4px">'+tasks+'</div>'+
+  '<div style="font-size:11px;color:'+C.faint+';margin-top:10px;line-height:1.5">預估只算每月固定投入的本金('+nt(mp)+'/月),沒有把股價漲跌和股息算進去,所以實際通常會比這個快。</div></div>';
 }
-function curveSVG(pts,ms){
- var W=420,H=130,pad=8,min=Math.min.apply(null,pts),max=Math.max(pts[pts.length-1],ms);
- function x(i){return pad+i/(pts.length-1)*(W-pad*2);}
- function y(v){return H-pad-((v-min)/((max-min)||1))*(H-pad*2);}
- var d=pts.map(function(v,i){return (i===0?"M":"L")+" "+x(i).toFixed(1)+" "+y(v).toFixed(1);}).join(" ");
- var msY=y(ms),show=ms<=max&&ms>=min;
- return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;margin-top:12px"><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="'+C.jade+'" stop-opacity="0.22"/><stop offset="100%" stop-color="'+C.jade+'" stop-opacity="0"/></linearGradient></defs>'+
-  (show?'<line x1="'+pad+'" y1="'+msY+'" x2="'+(W-pad)+'" y2="'+msY+'" stroke="'+C.gold+'" stroke-width="1" stroke-dasharray="4 4"/><text x="'+(W-pad)+'" y="'+(msY-5)+'" text-anchor="end" font-size="11" fill="'+C.gold+'" font-weight="600">'+nt(ms)+'</text>':'')+
-  '<path d="'+d+' L '+x(pts.length-1)+' '+(H-pad)+' L '+x(0)+' '+(H-pad)+' Z" fill="url(#fill)"/>'+
-  '<path d="'+d+'" fill="none" stroke="'+C.jade+'" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'+
-  '<circle cx="'+x(0)+'" cy="'+y(pts[0])+'" r="4" fill="'+C.ink+'"/><circle cx="'+x(pts.length-1)+'" cy="'+y(pts[pts.length-1])+'" r="4" fill="'+C.jade+'"/></svg>';
-}
-
 /* ---------- FLOW ---------- */
 function flowHTML(){
  if(!db.settings.configured)return '<div class="fadein">'+headerHTML("錢什麼時候真的離開戶頭")+
@@ -377,7 +419,7 @@ function flowHTML(){
    '<button class="press btn" data-act="setup" style="margin-top:12px;background:'+C.ink+';color:#fff">去設定</button></div>';
  var legend='<div style="display:flex;gap:14px;margin:12px 2px;font-size:12px;color:'+C.muted+';flex-wrap:wrap">'+
    db.cards.map(function(cd){return legendHTML(cd.color,cd.name+(cd.closeDay?" · 結"+cd.closeDay+"/付"+cd.payDay:""));}).join("")+
-   legendHTML(C.gold,"基金")+'</div>';
+   legendHTML(C.gold,"基金")+legendHTML(C.jade,"股息")+'</div>';
  var months=buildTimeline().map(function(mo){
    var ev=mo.events.length?mo.events.map(function(e,i){var col=e.a<0?C.jade:(e.c==="基金"?C.gold:(e.c==="—"?C.line:cardColor(e.c)));
      var amt=e.a===null?"浮動":e.a===0?"—":e.a<0?"+"+nt(-e.a):nt(e.a);
@@ -561,6 +603,20 @@ function setupHTML(){
        '<select data-sec="plans" data-i="'+i+'" data-f="card" style="'+sm+';width:86px">'+planOpts(p.card)+'</select></div></div>';
  }).join(""):'<div style="font-size:12px;color:'+C.faint+';margin-bottom:8px">還沒有規劃項目。</div>';
 
+ var divRows=d.dividends.length?d.dividends.map(function(dv,i){
+   return '<div style="border:1px solid '+C.line+';border-radius:12px;padding:10px;margin-bottom:8px;background:#fff">'+
+     '<div style="display:flex;gap:8px;margin-bottom:8px">'+
+       '<input data-sec="dividends" data-i="'+i+'" data-f="name" value="'+esc(dv.name)+'" placeholder="例:2330 台積電" style="'+sm+';flex:1"/>'+
+       '<button class="press" data-act="delRow" data-sec="dividends" data-i="'+i+'" style="color:'+C.clay+';font-size:12px;padding:0 4px">刪除</button></div>'+
+     '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">'+
+       '<span style="font-size:12px;color:'+C.muted+'">入帳</span>'+
+       '<input data-sec="dividends" data-i="'+i+'" data-f="ym" type="month" value="'+esc(dv.ym)+'" style="'+sm+';flex:1"/>'+
+       '<input data-sec="dividends" data-i="'+i+'" data-f="amount" inputmode="numeric" value="'+dv.amount+'" class="tnum" style="'+sm+';width:92px;text-align:right"/></div>'+
+     '<button class="press" data-act="divYearly" data-i="'+i+'" style="display:flex;align-items:center;gap:8px;font-size:12px;color:'+(dv.yearly?C.jade:C.muted)+'">'+
+       '<span style="width:20px;height:20px;border-radius:6px;flex-shrink:0;background:'+(dv.yearly?C.jade:"#fff")+';border:1.5px solid '+(dv.yearly?C.jade:C.line)+';display:flex;align-items:center;justify-content:center">'+(dv.yearly?ic(ICON.check,"#fff",13):"")+'</span>'+
+       '每年這個月都會配(季配的話就每季各記一筆)</button></div>';
+ }).join(""):'<div style="font-size:12px;color:'+C.faint+';margin-bottom:8px">還沒登記股息。</div>';
+
  var addBtn=function(sec,label){return '<button class="press" data-act="addRow" data-sec="'+sec+'" style="width:100%;background:#fff;border:1px dashed '+C.line+';border-radius:12px;padding:11px 0;font-size:14px;font-weight:600;color:'+C.muted+'">+ '+label+'</button>';};
 
  var cs=Math.round(Number(d.settings.cycleStartDay))||1;
@@ -583,6 +639,9 @@ function setupHTML(){
   '<div class="lbl">大筆規劃(旅行、獎金…)</div>'+
   '<div style="font-size:12px;color:'+C.muted+';margin-bottom:8px;line-height:1.5">金額填正數是支出、<b>填負數是進帳</b>(例:年終填 -100000)。來源選「基金」代表從出國基金扣。</div>'+
   planRows+addBtn("plans","新增一筆規劃")+
+  '<div class="lbl">股息</div>'+
+  '<div style="font-size:12px;color:'+C.muted+';margin-bottom:8px;line-height:1.5">填<b>實際入帳的月份</b>(不是除息日)和拿到的金額。會出現在資產頁的股息行事曆,時間軸也會把它當成那個月的進帳。</div>'+
+  divRows+addBtn("dividends","新增一筆股息")+
   '<button class="press btn" data-act="saveSetup" style="margin-top:20px;background:'+C.ink+';color:#fff">儲存</button>'+
   '<button class="press btn" data-act="backup" style="margin-top:8px;background:#fff;color:'+C.text+';border:1px solid '+C.line+'">備份與還原</button>'+
   '<div class="foot" style="margin-top:12px">改完記得去備份一份,資料只存在這台裝置。</div>';
@@ -604,7 +663,7 @@ function applySetup(){
  var csd=Math.round(Number(db.settings.cycleStartDay))||1;
  db.settings.cycleStartDay=csd<1?1:(csd>28?28:csd); /* 29–31 號有些月份不存在,夾到 28 */
  db.settings.configured=db.settings.income>0;
- db.cards=sd.cards;db.installments=sd.installments;db.plans=sd.plans;
+ db.cards=sd.cards;db.installments=sd.installments;db.plans=sd.plans;db.dividends=sd.dividends;
  ui.calCyc=curCycle();ui.calSel=null;
  persist();
 }
@@ -613,7 +672,7 @@ function applySetup(){
 function backupHTML(){
  var json=backupJSON();
  var ta='width:100%;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px 12px;border-radius:12px;border:1px solid '+C.line+';outline:none;background:'+C.surface+';resize:vertical;line-height:1.4';
- var stat=[["記錄",db.expenses.length+" 筆"],["信用卡",db.cards.length+" 張"],["分期",db.installments.length+" 筆"],["大筆規劃",db.plans.length+" 筆"]];
+ var stat=[["記錄",db.expenses.length+" 筆"],["信用卡",db.cards.length+" 張"],["分期",db.installments.length+" 筆"],["大筆規劃",db.plans.length+" 筆"],["股息",db.dividends.length+" 筆"]];
  var statRows=stat.map(function(x,i){return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-top:'+(i===0?"none":"1px solid "+C.line)+';font-size:13px"><span style="color:'+C.muted+'">'+x[0]+'</span><span style="font-weight:600">'+x[1]+'</span></div>';}).join("");
  return sheetHead("備份與還原")+
   '<div style="font-size:12px;color:'+C.muted+';line-height:1.6;background:#F3EEE2;border-radius:12px;padding:10px 12px">你的資料只存在這台裝置,沒有雲端可以幫你留一份。換手機、清掉 Safari 資料、或太久沒打開,都可能整組消失。定期匯出一份存到「檔案」或雲碟,就永遠救得回來。</div>'+
@@ -713,12 +772,14 @@ document.addEventListener("click",function(ev){
    if(mode==="set"){var pw2=(document.getElementById("pw2")||{}).value||"";if(pw.length<4){errEl.textContent="至少 4 碼";return;}if(pw!==pw2){errEl.textContent="兩次輸入不一致";return;}localStorage.setItem(PWKEY,pw);ui.unlocked=true;ui.sheet=null;ui.tab="assets";render();}
    else{if(pw===localStorage.getItem(PWKEY)){ui.unlocked=true;ui.sheet=null;ui.tab="assets";render();}else{errEl.textContent="密碼不對";}}
    return;}
- if(act==="setup"){ui.setupDraft={settings:Object.assign({},db.settings),cards:JSON.parse(JSON.stringify(db.cards)),installments:JSON.parse(JSON.stringify(db.installments)),plans:JSON.parse(JSON.stringify(db.plans))};ui.sheet={type:"setup"};render();return;}
+ if(act==="setup"){ui.setupDraft={settings:Object.assign({},db.settings),cards:JSON.parse(JSON.stringify(db.cards)),installments:JSON.parse(JSON.stringify(db.installments)),plans:JSON.parse(JSON.stringify(db.plans)),dividends:JSON.parse(JSON.stringify(db.dividends))};ui.sheet={type:"setup"};render();return;}
  if(act==="addRow"){syncSetup();var sec=el.getAttribute("data-sec"),d=ui.setupDraft,cur=curCycle();
    if(sec==="cards")d.cards.push({id:uid(),name:"新卡片",color:CARD_COLORS[d.cards.length%CARD_COLORS.length],closeDay:1,payDay:15});
    else if(sec==="installments")d.installments.push({id:uid(),name:"新分期",amt:0,startYM:cur,count:6,card:d.cards.length?d.cards[0].name:""});
+   else if(sec==="dividends")d.dividends.push({id:uid(),name:"新股息",ym:cur,amount:0,yearly:true});
    else d.plans.push({id:uid(),ym:cur,name:"新項目",amount:0,card:""});
    render();return;}
+ if(act==="divYearly"){syncSetup();var dv=ui.setupDraft.dividends[+el.getAttribute("data-i")];if(dv)dv.yearly=!dv.yearly;render();return;}
  if(act==="delRow"){syncSetup();ui.setupDraft[el.getAttribute("data-sec")].splice(+el.getAttribute("data-i"),1);render();return;}
  if(act==="saveSetup"){applySetup();ui.sheet=null;render();return;}
  if(act==="backup"){
